@@ -6,7 +6,13 @@ import com.squareup.moshi.JsonClass
 @JsonClass(generateAdapter = true)
 data class GeminiGenerateContentRequest(
     @Json(name = "contents") val contents: List<GeminiContent>,
-    @Json(name = "systemInstruction") val systemInstruction: GeminiContent? = null
+    @Json(name = "systemInstruction") val systemInstruction: GeminiContent? = null,
+    @Json(name = "generationConfig") val generationConfig: GeminiGenerationConfig? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class GeminiGenerationConfig(
+    @Json(name = "temperature") val temperature: Double
 )
 
 @JsonClass(generateAdapter = true)
