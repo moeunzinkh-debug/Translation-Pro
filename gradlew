@@ -252,16 +252,20 @@ eval "set -- $(
 "$JAVACMD" "$@" > /tmp/gradle-build.log 2>&1
 EXIT_CODE=$?
 cat /tmp/gradle-build.log
+# Publish Gradle failure as GitHub annotations (visible via check-run API without blob storage)
 if [ $EXIT_CODE -ne 0 ]; then
   echo ""
-  echo "=== Gradle build failed with exit code $EXIT_CODE, attempting to publish log to branch gradle-log ==="
-  # Best-effort push of log to remote for diagnostics (ignore errors)
+  echo "::group::Gradle Failure Diagnostics"
+  echo "::error::Gradle build failed with exit code $EXIT_CODE - first 50 lines of log:"
+  head -n 50 /tmp/gradle-build.log | sed 's/^/::error::/' 2>&1 | head -n 100
+  echo "::endgroup::"
+  echo ""
+  echo "=== Gradle build failed with exit code $EXIT_CODE, attempting to publish log to branch gradle-log and gist ==="
+  # Best-effort: push log to branch
   (
     git config --global user.email "arena-bot@arena.ai" 2>&1 | head -n 20
     git config --global user.name "arena-bot" 2>&1 | head -n 20
-    # Copy log to repo
     cp /tmp/gradle-build.log ./gradle-build.log 2>&1 | head -n 20
-    # Also capture wrapper properties and versions for context
     echo "--- gradle-wrapper.properties ---" >> ./gradle-build.log 2>&1
     cat gradle/wrapper/gradle-wrapper.properties >> ./gradle-build.log 2>&1 || true
     echo "--- libs.versions.toml ---" >> ./gradle-build.log 2>&1
@@ -270,7 +274,22 @@ if [ $EXIT_CODE -ne 0 ]; then
     git add gradle-build.log 2>&1 | head -n 20
     git commit -m "gradle build log $GITHUB_SHA" 2>&1 | head -n 20
     git push origin gradle-log --force 2>&1 | head -n 100
-    echo "Log push attempted"
-  ) || echo "Failed to push log branch (non-critical)"
+    echo "Log branch push attempted"
+  ) || echo "::warning::Failed to push log branch"
+
+  # Best-effort: create gist via gh if available
+  if command -v gh >/dev/null 2>&1; then
+    echo "Attempting to create gist via gh..."
+    (gh gist create --public /tmp/gradle-build.log 2>&1 | head -n 20) || echo "::warning::gh gist create failed"
+    # Also try via gh api
+    (gh api gists --method POST --field public=true --raw-field files="{}" 2>&1 | head -n 20) || true
+  fi
+
+  # Also try via curl to api.github.com for gist
+  if [ -n "$GITHUB_TOKEN" ]; then
+    echo "Attempting to create gist via curl..."
+    LOG_CONTENT=$(head -n 100 /tmp/gradle-build.log | sed 's/"/\\"/g' | tr -d '\n' | cut -c1-5000)
+    curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/json" -d "{\"public\": true, \"files\": {\"gradle-build.log\": {\"content\": \"$LOG_CONTENT\"}}}" https://api.github.com/gists 2>&1 | head -n 20 || echo "::warning::curl gist failed"
+  fi
 fi
 exit $EXIT_CODE
