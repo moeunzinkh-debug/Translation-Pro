@@ -1,0 +1,6 @@
+{
+  "name": "Translate Pro",
+  "description": "Smart AI-powered translator with slang & idiom understanding, multi-provider keys, and SRT/VTT subtitle translation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
