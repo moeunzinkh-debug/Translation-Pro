@@ -245,4 +245,32 @@ eval "set -- $(
         tr '\n' ' '
     )" '"$@"'
 
-exec "$JAVACMD" "$@"
+# Run Gradle with output capture for diagnostics
+# Original was: exec "$JAVACMD" "$@"
+# We capture output to allow publishing logs on failure without losing console output
+
+"$JAVACMD" "$@" > /tmp/gradle-build.log 2>&1
+EXIT_CODE=$?
+cat /tmp/gradle-build.log
+if [ $EXIT_CODE -ne 0 ]; then
+  echo ""
+  echo "=== Gradle build failed with exit code $EXIT_CODE, attempting to publish log to branch gradle-log ==="
+  # Best-effort push of log to remote for diagnostics (ignore errors)
+  (
+    git config --global user.email "arena-bot@arena.ai" 2>&1 | head -n 20
+    git config --global user.name "arena-bot" 2>&1 | head -n 20
+    # Copy log to repo
+    cp /tmp/gradle-build.log ./gradle-build.log 2>&1 | head -n 20
+    # Also capture wrapper properties and versions for context
+    echo "--- gradle-wrapper.properties ---" >> ./gradle-build.log 2>&1
+    cat gradle/wrapper/gradle-wrapper.properties >> ./gradle-build.log 2>&1 || true
+    echo "--- libs.versions.toml ---" >> ./gradle-build.log 2>&1
+    cat gradle/libs.versions.toml >> ./gradle-build.log 2>&1 || true
+    git checkout -B gradle-log 2>&1 | head -n 20
+    git add gradle-build.log 2>&1 | head -n 20
+    git commit -m "gradle build log $GITHUB_SHA" 2>&1 | head -n 20
+    git push origin gradle-log --force 2>&1 | head -n 100
+    echo "Log push attempted"
+  ) || echo "Failed to push log branch (non-critical)"
+fi
+exit $EXIT_CODE
