@@ -26,13 +26,39 @@ data class TranslationUiState(
     val errorMessage: String? = null,
     val slangNotes: String? = null,
     val activeProvider: AiProvider = AiProvider.SEA_LION,
-    val isKeyMissing: Boolean = false
+    val isKeyMissing: Boolean = false,
+    // --- "Tap again for an easier alternative" tracking ---
+    // How many times the current input has been translated (1 = first translation)
+    val translationAttempt: Int = 0,
+    // True when the currently shown result is a simplified alternative rather than the first translation
+    val isAlternativeResult: Boolean = false,
+    // The exact context that produced the currently shown result
+    val lastTranslatedInput: String = "",
+    val lastUsedSourceLanguage: String = "",
+    val lastUsedTargetLanguage: String = "",
+    val lastUsedTone: TranslationTone? = null
 )
+
+/**
+ * True when pressing Translate again will NOT start a fresh translation, but instead
+ * rephrase the currently shown answer into a different, easier-to-understand version.
+ */
+fun TranslationUiState.willRephraseOnTranslate(): Boolean {
+    return translatedText.isNotEmpty() &&
+        inputText.trim().isNotEmpty() &&
+        inputText.trim() == lastTranslatedInput &&
+        sourceLanguage == lastUsedSourceLanguage &&
+        targetLanguage == lastUsedTargetLanguage &&
+        tone == lastUsedTone
+}
 
 class TranslationViewModel(
     private val translationRepository: TranslationRepository,
     private val settingsRepository: SecureSettingsRepository
 ) : ViewModel() {
+
+    // Translations already shown for the current input, sent to the AI so it avoids repeats
+    private val shownTranslations = mutableListOf<String>()
 
     private val _uiState = MutableStateFlow(
         TranslationUiState(
@@ -88,11 +114,18 @@ class TranslationViewModel(
     }
 
     fun clearInput() {
+        shownTranslations.clear()
         _uiState.value = _uiState.value.copy(
             inputText = "",
             translatedText = "",
             slangNotes = null,
-            errorMessage = null
+            errorMessage = null,
+            translationAttempt = 0,
+            isAlternativeResult = false,
+            lastTranslatedInput = "",
+            lastUsedSourceLanguage = "",
+            lastUsedTargetLanguage = "",
+            lastUsedTone = null
         )
     }
 
@@ -113,6 +146,14 @@ class TranslationViewModel(
             return
         }
 
+        // If the user taps Translate again on the SAME text/languages/tone, they want
+        // a different, easier-to-understand version of the answer - not the same one.
+        val isRephrase = _uiState.value.willRephraseOnTranslate()
+        val attempt = if (isRephrase) _uiState.value.translationAttempt + 1 else 1
+        if (!isRephrase) {
+            shownTranslations.clear()
+        }
+
         _uiState.value = _uiState.value.copy(
             isLoading = true,
             errorMessage = null,
@@ -126,18 +167,32 @@ class TranslationViewModel(
                 targetLanguage = _uiState.value.targetLanguage,
                 text = text,
                 tone = _uiState.value.tone,
-                isSubtitle = false
+                isSubtitle = false,
+                alternativeAttempt = if (isRephrase) attempt - 1 else 0,
+                previousTranslations = shownTranslations.toList()
             )
 
             val result = translationRepository.translate(req)
 
             if (result.isSuccess) {
                 val data = result.getOrNull()
+                val newTranslation = data?.translatedText ?: ""
+                if (newTranslation.isNotBlank()) {
+                    shownTranslations.add(newTranslation)
+                    // Keep the prompt history bounded to the most recent few variants
+                    while (shownTranslations.size > 5) shownTranslations.removeAt(0)
+                }
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    translatedText = data?.translatedText ?: "",
+                    translatedText = newTranslation,
                     slangNotes = data?.slangNotes,
-                    errorMessage = null
+                    errorMessage = null,
+                    translationAttempt = attempt,
+                    isAlternativeResult = isRephrase,
+                    lastTranslatedInput = text,
+                    lastUsedSourceLanguage = _uiState.value.sourceLanguage,
+                    lastUsedTargetLanguage = _uiState.value.targetLanguage,
+                    lastUsedTone = _uiState.value.tone
                 )
             } else {
                 val err = result.exceptionOrNull()?.message ?: "Translation failed."

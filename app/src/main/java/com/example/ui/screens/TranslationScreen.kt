@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
@@ -71,6 +72,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.TranslationTone
 import com.example.ui.components.LanguageData
 import com.example.ui.viewmodel.TranslationViewModel
+import com.example.ui.viewmodel.willRephraseOnTranslate
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -85,6 +87,9 @@ fun TranslationScreen(
 
     var showSourcePicker by remember { mutableStateOf(false) }
     var showTargetPicker by remember { mutableStateOf(false) }
+
+    // True when tapping Translate again will show a different, easier-to-understand alternative
+    val willRephrase = state.willRephraseOnTranslate()
 
     Column(
         modifier = Modifier
@@ -383,7 +388,7 @@ fun TranslationScreen(
             }
         }
 
-        // Translate Button
+        // Translate Button (turns into "easier alternative" button when tapped again on the same text)
         Button(
             onClick = { viewModel.translate() },
             enabled = !state.isLoading && state.inputText.isNotBlank(),
@@ -400,19 +405,39 @@ fun TranslationScreen(
                     strokeWidth = 2.dp
                 )
                 Spacer(modifier = Modifier.width(12.dp))
-                Text("Smart Translating...", fontWeight = FontWeight.Bold)
+                Text(
+                    text = if (willRephrase) "Finding an easier version..." else "Smart Translating...",
+                    fontWeight = FontWeight.Bold
+                )
             } else {
                 Icon(
-                    imageVector = Icons.Default.Translate,
+                    imageVector = if (willRephrase) Icons.Default.AutoAwesome else Icons.Default.Translate,
                     contentDescription = null
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Translate with ${state.activeProvider.displayName}",
+                    text = if (willRephrase) {
+                        "Show an Easier Alternative"
+                    } else {
+                        "Translate with ${state.activeProvider.displayName}"
+                    },
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
             }
+        }
+
+        // Hint that tapping again shows a different, easier-to-understand answer
+        if (willRephrase && !state.isLoading) {
+            Text(
+                text = "Not quite clear? Tap again — we'll find a different translation that's easier to understand.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp)
+                    .testTag("rephrase_hint")
+            )
         }
 
         // Error message callout
@@ -487,6 +512,35 @@ fun TranslationScreen(
                                     imageVector = Icons.Default.ContentCopy,
                                     contentDescription = "Copy result",
                                     tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+
+                    // Badge shown when this answer is a re-tap alternative
+                    if (state.isAlternativeResult) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            modifier = Modifier.testTag("alternative_badge")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Alternative #${state.translationAttempt - 1} · Easier to understand",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer
                                 )
                             }
                         }

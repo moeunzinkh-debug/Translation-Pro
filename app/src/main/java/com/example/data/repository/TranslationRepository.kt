@@ -6,6 +6,7 @@ import com.example.data.api.ChatMessage
 import com.example.data.api.GeminiApiService
 import com.example.data.api.GeminiContent
 import com.example.data.api.GeminiGenerateContentRequest
+import com.example.data.api.GeminiGenerationConfig
 import com.example.data.api.GeminiPart
 import com.example.data.api.OpenAiApiService
 import com.example.data.model.AiProvider
@@ -138,7 +139,7 @@ class TranslationRepository(
                 ChatMessage("system", systemPrompt),
                 ChatMessage("user", userContent)
             ),
-            temperature = 0.2
+            temperature = temperatureFor(request)
         )
 
         val response = openAiApiService.createChatCompletion(
@@ -174,7 +175,7 @@ class TranslationRepository(
                 ChatMessage("system", systemPrompt),
                 ChatMessage("user", userContent)
             ),
-            temperature = 0.2
+            temperature = temperatureFor(request)
         )
 
         val response = openAiApiService.createChatCompletion(
@@ -211,7 +212,7 @@ class TranslationRepository(
                 ChatMessage("system", systemPrompt),
                 ChatMessage("user", userContent)
             ),
-            temperature = 0.2
+            temperature = temperatureFor(request)
         )
 
         val response = openAiApiService.createChatCompletion(
@@ -248,6 +249,9 @@ class TranslationRepository(
             ),
             systemInstruction = GeminiContent(
                 parts = listOf(GeminiPart(systemPrompt))
+            ),
+            generationConfig = GeminiGenerationConfig(
+                temperature = temperatureFor(request)
             )
         )
 
@@ -269,8 +273,8 @@ class TranslationRepository(
     }
 
     private fun buildSystemPrompt(request: TranslationRequest): String {
-        return if (request.isSubtitle) {
-            """
+        if (request.isSubtitle) {
+            return """
             You are a professional media subtitle translator.
             Task:
             1. Translate dialogue segments accurately into ${request.targetLanguage}.
@@ -280,22 +284,50 @@ class TranslationRepository(
             5. Keep proper nouns and named entities consistent.
             6. STRICT SUBTITLE CONSTRAINT: Output ONLY the translated dialogue text. Do NOT include line numbers, timestamps, explanatory notes, or intro/outro conversational fluff.
             """.trimIndent()
-        } else {
-            """
-            You are a high-precision smart translator specialized in natural idioms and slang.
-            Task:
-            1. Translate text from ${request.sourceLanguage} to ${request.targetLanguage}.
-            2. Understand slang, idioms, metaphors, and cultural context. Translate meaning naturally rather than literal word-for-word.
-            3. Tone instruction: ${request.tone.promptInstruction}
-            4. Keep proper nouns, places, and brand names consistent.
-            5. If slang or idioms are ambiguous or have cultural depth, translate to the most natural equivalent, and optionally append a brief note on a new line at the end starting with '[Note: ...]' explaining the idiom.
-            6. OUTPUT FORMAT: Return the translated text directly. Do not add introductory labels like 'Translation:' or 'Here is the translated text:'.
-            """.trimIndent()
         }
+
+        val basePrompt = """
+        You are a high-precision smart translator specialized in natural idioms and slang.
+        Task:
+        1. Translate text from ${request.sourceLanguage} to ${request.targetLanguage}.
+        2. Understand slang, idioms, metaphors, and cultural context. Translate meaning naturally rather than literal word-for-word.
+        3. Tone instruction: ${request.tone.promptInstruction}
+        4. Keep proper nouns, places, and brand names consistent.
+        5. If slang or idioms are ambiguous or have cultural depth, translate to the most natural equivalent, and optionally append a brief note on a new line at the end starting with '[Note: ...]' explaining the idiom.
+        6. OUTPUT FORMAT: Return the translated text directly. Do not add introductory labels like 'Translation:' or 'Here is the translated text:'.
+        """.trimIndent()
+
+        // Normal first translation
+        if (request.alternativeAttempt <= 0) {
+            return basePrompt
+        }
+
+        // The user tapped "Translate" again: produce a DIFFERENT, simpler alternative.
+        val previousList = request.previousTranslations
+            .mapIndexed { index, previous -> "${index + 1}. \"$previous\"" }
+            .joinToString("\n")
+            .ifBlank { "(none)" }
+
+        return basePrompt + "\n\n" + """
+        REPHRASING TASK (alternative #${request.alternativeAttempt}):
+        The user has already seen the translation(s) below, but asked again because they want a DIFFERENT version that is EASIER TO UNDERSTAND.
+        Previous translation(s) to avoid repeating:
+        $previousList
+        Requirements for your new translation:
+        1. It MUST be clearly different from every previous translation above. Do NOT reuse their distinctive wording, phrases, or sentence structures.
+        2. It MUST be simpler and easier to understand: prefer common everyday words, shorter sentences, and the most natural way a native speaker would say it in ${request.targetLanguage}.
+        3. Keep the original meaning, tone instruction, and cultural nuance intact.
+        """.trimIndent()
     }
 
     private fun buildUserContent(request: TranslationRequest): String {
         return request.text
+    }
+
+    // Low temperature keeps the first translation precise; a higher temperature on
+    // re-taps encourages the AI to come up with a genuinely different alternative.
+    private fun temperatureFor(request: TranslationRequest): Double {
+        return if (request.alternativeAttempt > 0) 0.75 else 0.2
     }
 
     private fun parseTranslationOutput(
