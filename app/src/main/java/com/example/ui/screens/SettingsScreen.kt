@@ -70,6 +70,9 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
 
     var providerDropdownExpanded by remember { mutableStateOf(false) }
     var keyVisible by remember { mutableStateOf(false) }
+    var newGeminiKey by remember { mutableStateOf("") }
+    var newGeminiLabel by remember { mutableStateOf("") }
+    var newGeminiLimit by remember { mutableStateOf("20") }
 
     Column(
         modifier = Modifier
@@ -251,36 +254,22 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
                     }
 
                     AiProvider.GEMINI -> {
-                        OutlinedTextField(
-                            value = state.geminiApiKey,
-                            onValueChange = { viewModel.onGeminiApiKeyChanged(it) },
-                            label = { Text("Gemini API Key") },
-                            placeholder = { Text("AIzaSy...") },
-                            singleLine = true,
-                            visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                            trailingIcon = {
-                                IconButton(onClick = { keyVisible = !keyVisible }) {
-                                    Icon(
-                                        imageVector = if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                        contentDescription = null
-                                    )
+                        Text("Gemini key pool", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("Add as many keys as needed. Remaining requests are based on your app-managed daily limit; Google does not expose live project quota through an API key.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        state.geminiKeys.forEach { key ->
+                            Surface(shape = RoundedCornerShape(12.dp), color = if (key.value == state.geminiApiKey) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth().clickable { viewModel.selectGeminiKey(key.id) }) {
+                                Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Column(Modifier.weight(1f)) { Text(key.label, fontWeight = FontWeight.SemiBold); Text("${key.maskedValue} · ${key.remainingToday} / ${key.dailyLimit} requests left today", style = MaterialTheme.typography.bodySmall) }
+                                    TextButton(onClick = { viewModel.removeGeminiKey(key.id) }) { Text("Remove") }
                                 }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("gemini_api_key_field")
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        OutlinedTextField(
-                            value = state.geminiModel,
-                            onValueChange = { viewModel.onGeminiModelChanged(it) },
-                            label = { Text("Gemini Model Name") },
-                            placeholder = { Text("gemini-2.5-flash") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                            }
+                            Spacer(Modifier.height(6.dp))
+                        }
+                        OutlinedTextField(newGeminiLabel, { newGeminiLabel = it }, label = { Text("Key label") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(newGeminiKey, { newGeminiKey = it }, label = { Text("New Gemini API key") }, placeholder = { Text("AIza...") }, singleLine = true, visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { keyVisible = !keyVisible }) { Icon(if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null) } }, modifier = Modifier.fillMaxWidth().testTag("gemini_api_key_field"))
+                        OutlinedTextField(newGeminiLimit, { newGeminiLimit = it.filter(Char::isDigit) }, label = { Text("Daily request budget") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        Button(onClick = { viewModel.addGeminiKey(newGeminiLabel, newGeminiKey, newGeminiLimit.toIntOrNull() ?: 20); newGeminiKey = ""; newGeminiLabel = "" }, enabled = newGeminiKey.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Add Gemini key") }
+                        OutlinedTextField(value = state.geminiModel, onValueChange = { viewModel.onGeminiModelChanged(it) }, label = { Text("Gemini model") }, placeholder = { Text("gemini-2.5-flash") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     }
 
                     AiProvider.CHATGPT -> {

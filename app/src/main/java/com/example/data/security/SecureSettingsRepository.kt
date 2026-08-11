@@ -6,7 +6,10 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.example.BuildConfig
 import com.example.data.model.AiProvider
+import com.example.data.model.GeminiKey
 import com.example.data.model.TranslationTone
+import java.time.LocalDate
+import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,7 +44,9 @@ class SecureSettingsRepository(private val context: Context) {
         private const val KEY_SEA_LION_BASE_URL = "sea_lion_base_url"
         private const val KEY_SEA_LION_MODEL = "sea_lion_model"
 
-        private const val KEY_GEMINI_API_KEY = "gemini_api_key"
+        private const val KEY_GEMINI_API_KEY = "gemini_api_key" // legacy single-key migration
+        private const val KEY_GEMINI_KEYS = "gemini_keys_v2"
+        private const val KEY_GEMINI_ACTIVE_KEY = "gemini_active_key"
         private const val KEY_GEMINI_MODEL = "gemini_model"
 
         private const val KEY_CHATGPT_API_KEY = "chatgpt_api_key"
@@ -95,21 +100,45 @@ class SecureSettingsRepository(private val context: Context) {
         prefs.edit().putString(KEY_SEA_LION_MODEL, model.trim()).apply()
     }
 
-    // --- Gemini ---
-    fun getGeminiApiKey(): String {
-        val saved = prefs.getString(KEY_GEMINI_API_KEY, "")
-        if (!saved.isNullOrBlank()) return saved
-        // Check BuildConfig from .env injection if available
-        return try {
-            val buildConfigKey = BuildConfig::class.java.getField("GEMINI_API_KEY").get(null) as? String
-            if (buildConfigKey != null && !buildConfigKey.isNullFlowKey()) buildConfigKey else ""
-        } catch (e: Exception) {
-            ""
-        }
+    // --- Gemini: unlimited local key slots. Gemini does not expose remaining project quota to API keys;
+    // the limit below is an optional app-managed daily request budget, shown transparently in the UI.
+    fun getGeminiKeys(): List<GeminiKey> {
+        val today = LocalDate.now().toString()
+        val raw = prefs.getString(KEY_GEMINI_KEYS, "") ?: ""
+        val stored = raw.lineSequence().mapNotNull { line ->
+            val p = line.split("|", limit = 6)
+            if (p.size == 6) GeminiKey(p[0], p[1], p[2], p[3].toIntOrNull() ?: 20, if (p[5] == today) p[4].toIntOrNull() ?: 0 else 0, today) else null
+        }.toList()
+        if (stored.isNotEmpty()) return stored
+        val legacy = prefs.getString(KEY_GEMINI_API_KEY, "").orEmpty()
+        return if (legacy.isBlank()) emptyList() else listOf(GeminiKey(UUID.randomUUID().toString(), "Gemini key 1", legacy, 20, 0, today)).also { saveGeminiKeys(it) }
     }
 
-    fun setGeminiApiKey(key: String) {
-        prefs.edit().putString(KEY_GEMINI_API_KEY, key.trim()).apply()
+    fun addGeminiKey(label: String, key: String, dailyLimit: Int = 20) {
+        if (key.isBlank()) return
+        saveGeminiKeys(getGeminiKeys() + GeminiKey(UUID.randomUUID().toString(), label.ifBlank { "Gemini key ${getGeminiKeys().size + 1}" }, key.trim(), dailyLimit.coerceAtLeast(1), 0, LocalDate.now().toString()))
+    }
+    fun removeGeminiKey(id: String) { saveGeminiKeys(getGeminiKeys().filterNot { it.id == id }); if (prefs.getString(KEY_GEMINI_ACTIVE_KEY, "") == id) prefs.edit().remove(KEY_GEMINI_ACTIVE_KEY).apply() }
+    fun setActiveGeminiKey(id: String) { prefs.edit().putString(KEY_GEMINI_ACTIVE_KEY, id).apply() }
+    fun recordGeminiRequest() {
+        val active = getActiveGeminiKey() ?: return
+        saveGeminiKeys(getGeminiKeys().map { if (it.id == active.id) it.copy(usedToday = it.usedToday + 1) else it })
+    }
+    fun getActiveGeminiKey(): GeminiKey? {
+        val keys = getGeminiKeys().filter { it.remainingToday > 0 }
+        if (keys.isEmpty()) return getGeminiKeys().firstOrNull()
+        val requested = prefs.getString(KEY_GEMINI_ACTIVE_KEY, "")
+        return keys.firstOrNull { it.id == requested } ?: keys.first()
+    }
+    private fun saveGeminiKeys(keys: List<GeminiKey>) {
+        prefs.edit().putString(KEY_GEMINI_KEYS, keys.joinToString("\n") { "${it.id}|${it.label.replace("|", " ")}|${it.value}|${it.dailyLimit}|${it.usedToday}|${it.day}" }).apply()
+    }
+    fun getGeminiApiKey(): String {
+        return getActiveGeminiKey()?.value ?: try { (BuildConfig::class.java.getField("GEMINI_API_KEY").get(null) as? String).takeUnless { it.isNullFlowKey() }.orEmpty() } catch (_: Exception) { "" }
+    }
+    fun setGeminiApiKey(key: String) { // preserves compatibility for old callers
+        val existing = getGeminiKeys().firstOrNull()
+        if (existing == null) addGeminiKey("Gemini key 1", key) else saveGeminiKeys(getGeminiKeys().map { if (it.id == existing.id) it.copy(value = key.trim()) else it })
     }
 
     fun getGeminiModel(): String {

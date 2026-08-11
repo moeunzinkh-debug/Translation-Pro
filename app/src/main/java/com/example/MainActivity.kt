@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,6 +37,8 @@ import com.example.data.security.SecureSettingsRepository
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SubtitleScreen
 import com.example.ui.screens.TranslationScreen
+import com.example.ui.screens.TranscriptScreen
+import com.example.ui.viewmodel.TranscriptViewModel
 import com.example.ui.theme.TranslateProTheme
 import com.example.ui.viewmodel.SettingsViewModel
 import com.example.ui.viewmodel.SubtitleViewModel
@@ -60,6 +63,8 @@ class MainActivity : ComponentActivity() {
                         SubtitleViewModel(translationRepo, settingsRepo) as T
                     modelClass.isAssignableFrom(SettingsViewModel::class.java) ->
                         SettingsViewModel(settingsRepo, translationRepo) as T
+                    modelClass.isAssignableFrom(TranscriptViewModel::class.java) ->
+                        TranscriptViewModel(translationRepo) as T
                     else -> throw IllegalArgumentException("Unknown ViewModel class ${modelClass.name}")
                 }
             }
@@ -70,11 +75,13 @@ class MainActivity : ComponentActivity() {
                 val translationViewModel: TranslationViewModel = viewModel(factory = factory)
                 val subtitleViewModel: SubtitleViewModel = viewModel(factory = factory)
                 val settingsViewModel: SettingsViewModel = viewModel(factory = factory)
+                val transcriptViewModel: TranscriptViewModel = viewModel(factory = factory)
 
                 TranslateProApp(
                     translationViewModel = translationViewModel,
                     subtitleViewModel = subtitleViewModel,
-                    settingsViewModel = settingsViewModel
+                    settingsViewModel = settingsViewModel,
+                    transcriptViewModel = transcriptViewModel
                 )
             }
         }
@@ -86,11 +93,12 @@ class MainActivity : ComponentActivity() {
 fun TranslateProApp(
     translationViewModel: TranslationViewModel,
     subtitleViewModel: SubtitleViewModel,
-    settingsViewModel: SettingsViewModel
+    settingsViewModel: SettingsViewModel,
+    transcriptViewModel: TranscriptViewModel
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
 
-    val titles = listOf("Translate Pro", "Subtitle Translator", "API Key Settings")
+    val titles = listOf("Translate Pro", "Subtitle Translator", "Transcript", "API Key Settings")
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -131,6 +139,12 @@ fun TranslateProApp(
                 NavigationBarItem(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
+                    icon = { Icon(Icons.Default.GraphicEq, contentDescription = "Transcript") },
+                    label = { Text("Transcript") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 3,
+                    onClick = { selectedTab = 3 },
                     icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
                     label = { Text("Settings") },
                     modifier = Modifier.testTag("nav_item_settings")
@@ -146,10 +160,11 @@ fun TranslateProApp(
             when (selectedTab) {
                 0 -> TranslationScreen(
                     viewModel = translationViewModel,
-                    onNavigateToSettings = { selectedTab = 2 }
+                    onNavigateToSettings = { selectedTab = 3 }
                 )
                 1 -> SubtitleScreen(viewModel = subtitleViewModel)
-                2 -> SettingsScreen(viewModel = settingsViewModel)
+                2 -> TranscriptScreen(viewModel = transcriptViewModel)
+                3 -> SettingsScreen(viewModel = settingsViewModel)
             }
         }
     }
