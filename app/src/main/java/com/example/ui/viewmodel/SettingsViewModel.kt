@@ -3,6 +3,7 @@ package com.example.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.model.AiProvider
+import com.example.data.model.GeminiKey
 import com.example.data.repository.TranslationRepository
 import com.example.data.security.SecureSettingsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +22,7 @@ data class SettingsUiState(
     // Gemini
     val geminiApiKey: String = "",
     val geminiModel: String = "",
+    val geminiKeys: List<GeminiKey> = emptyList(),
 
     // ChatGPT
     val chatGptApiKey: String = "",
@@ -59,6 +61,7 @@ class SettingsViewModel(
 
             geminiApiKey = settingsRepository.getGeminiApiKey(),
             geminiModel = settingsRepository.getGeminiModel(),
+            geminiKeys = settingsRepository.getGeminiKeys(),
 
             chatGptApiKey = settingsRepository.getChatGptApiKey(),
             chatGptModel = settingsRepository.getChatGptModel(),
@@ -99,6 +102,10 @@ class SettingsViewModel(
         settingsRepository.setGeminiApiKey(key)
         _uiState.value = _uiState.value.copy(geminiApiKey = key, isSavedSuccess = true)
     }
+
+    fun addGeminiKey(label: String, key: String, limit: Int) { settingsRepository.addGeminiKey(label, key, limit); loadSettings() }
+    fun removeGeminiKey(id: String) { settingsRepository.removeGeminiKey(id); loadSettings() }
+    fun selectGeminiKey(id: String) { settingsRepository.setActiveGeminiKey(id); loadSettings() }
 
     fun onGeminiModelChanged(model: String) {
         settingsRepository.setGeminiModel(model)

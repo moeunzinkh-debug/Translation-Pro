@@ -21,7 +21,16 @@
      - **Custom Endpoint** (Configurable Base URL and model)
    - Built-in "Test API Connection" tool to verify credentials.
 
-3. **Media Subtitle Translation (.srt & .vtt)**
+3. **Gemini Key Pool & Daily Budget**
+   - Add and remove an unlimited number of encrypted Gemini API keys.
+   - Select an active key and see its app-managed daily request budget and remaining requests.
+   - Gemini does not provide a remaining project quota endpoint for API keys; the displayed amount is the transparent local request budget configured for that key.
+
+4. **Gemini Audio Transcript**
+   - Select an audio file and generate a plain-text transcript through Gemini's multimodal API.
+   - Copy the completed transcript directly from the app.
+
+5. **Media Subtitle Translation (.srt & .vtt)**
    - Parses SubRip (`.srt`) and WebVTT (`.vtt`) subtitle files.
    - Preserves exact index numbers and timing timestamps (`00:01:20,000 --> 00:01:23,150`).
    - Batch chunking strategy with real-time progress bar and automatic single-line fallback retries.

@@ -7,7 +7,9 @@ import com.example.data.api.GeminiApiService
 import com.example.data.api.GeminiContent
 import com.example.data.api.GeminiGenerateContentRequest
 import com.example.data.api.GeminiGenerationConfig
+import com.example.data.api.GeminiInlineData
 import com.example.data.api.GeminiPart
+import android.util.Base64
 import com.example.data.api.OpenAiApiService
 import com.example.data.model.AiProvider
 import com.example.data.model.TranslationRequest
@@ -269,8 +271,28 @@ class TranslationRepository(
         val rawText = response.body()?.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
             ?: throw IOException("Empty response from Gemini API")
 
+        settingsRepository.recordGeminiRequest()
         return parseTranslationOutput(rawText, request, AiProvider.GEMINI)
     }
+
+    /** Sends an audio clip to Gemini's multimodal generateContent endpoint and returns plain transcript text. */
+    suspend fun transcribe(audio: ByteArray, mimeType: String, languageHint: String): Result<String> = try {
+        val apiKey = settingsRepository.getGeminiApiKey()
+        if (apiKey.isBlank()) throw IllegalArgumentException("Add a Gemini API key in Settings first.")
+        val request = GeminiGenerateContentRequest(
+            contents = listOf(GeminiContent(parts = listOf(
+                GeminiPart(text = "Transcribe this audio accurately${if (languageHint.isBlank()) "" else " in $languageHint"}. Return only the transcript, with natural paragraph breaks.") ,
+                GeminiPart(inlineData = GeminiInlineData(mimeType, Base64.encodeToString(audio, Base64.NO_WRAP)))
+            ))),
+            generationConfig = GeminiGenerationConfig(temperature = 0.1)
+        )
+        val response = geminiApiService.generateContent(settingsRepository.getGeminiModel(), apiKey, request)
+        if (!response.isSuccessful) throw IOException("Gemini API error (${response.code()}): ${response.errorBody()?.string().orEmpty()}")
+        val text = response.body()?.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+            ?: throw IOException("Gemini returned an empty transcript.")
+        settingsRepository.recordGeminiRequest()
+        Result.success(text.trim())
+    } catch (e: Exception) { Result.failure(e) }
 
     private fun buildSystemPrompt(request: TranslationRequest): String {
         if (request.isSubtitle) {
