@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import android.content.Context
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -52,9 +51,12 @@ fun TranscriptScreen(viewModel: TranscriptViewModel) {
                 Button(
                     onClick = {
                         selected?.let { uri ->
-                            context.contentResolver.openInputStream(uri)?.use { input ->
-                                viewModel.transcribe(input.readBytes(), context.contentResolver.getType(uri) ?: "audio/mpeg", language.takeUnless { it == "Auto-detect" }.orEmpty())
-                            }
+                            viewModel.transcribeFromUri(
+                                context = context,
+                                uri = uri,
+                                mimeType = context.contentResolver.getType(uri) ?: "audio/mpeg",
+                                language = language.takeUnless { it == "Auto-detect" }.orEmpty()
+                            )
                         }
                     },
                     enabled = selected != null && !state.isWorking,

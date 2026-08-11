@@ -10,7 +10,15 @@ data class GeminiInteractionRequest(
     @Json(name = "input") val input: List<GeminiInteractionContent>,
     @Json(name = "system_instruction") val systemInstruction: String? = null,
     @Json(name = "generation_config") val generationConfig: GeminiInteractionGenerationConfig? = null,
+    @Json(name = "transcription_config") val transcriptionConfig: GeminiTranscriptionConfig? = null,
     @Json(name = "store") val store: Boolean = false
+)
+
+@JsonClass(generateAdapter = true)
+data class GeminiTranscriptionConfig(
+    @Json(name = "diarization_mode") val diarizationMode: String? = null,
+    @Json(name = "language_codes") val languageCodes: List<String>? = null,
+    @Json(name = "timestamp_granularities") val timestampGranularities: List<String>? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -23,7 +31,11 @@ data class GeminiInteractionContent(
     @Json(name = "type") val type: String,
     @Json(name = "text") val text: String? = null,
     @Json(name = "mime_type") val mimeType: String? = null,
-    @Json(name = "data") val data: String? = null
+    @Json(name = "data") val data: String? = null,
+    // Present on word_info content blocks when transcription diarization is enabled.
+    @Json(name = "speaker") val speaker: String? = null,
+    @Json(name = "start_offset") val startOffset: String? = null,
+    @Json(name = "end_offset") val endOffset: String? = null
 )
 
 @JsonClass(generateAdapter = true)

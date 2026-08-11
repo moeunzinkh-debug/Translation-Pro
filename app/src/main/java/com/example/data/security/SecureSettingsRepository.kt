@@ -116,7 +116,19 @@ class SecureSettingsRepository(private val context: Context) {
 
     fun addGeminiKey(label: String, key: String, dailyLimit: Int = 20) {
         if (key.isBlank()) return
-        saveGeminiKeys(getGeminiKeys() + GeminiKey(UUID.randomUUID().toString(), label.ifBlank { "Gemini key ${getGeminiKeys().size + 1}" }, key.trim(), dailyLimit.coerceAtLeast(1), 0, LocalDate.now().toString()))
+        val existingKeys = getGeminiKeys()
+        val safeLabel = label.trim().replace(Regex("[|\\r\\n]"), " ")
+        val displayLabel = safeLabel.ifBlank { "Gemini key ${existingKeys.size + 1}" }
+        saveGeminiKeys(
+            existingKeys + GeminiKey(
+                UUID.randomUUID().toString(),
+                displayLabel,
+                key.trim(),
+                dailyLimit.coerceAtLeast(1),
+                0,
+                LocalDate.now().toString()
+            )
+        )
     }
     fun removeGeminiKey(id: String) { saveGeminiKeys(getGeminiKeys().filterNot { it.id == id }); if (prefs.getString(KEY_GEMINI_ACTIVE_KEY, "") == id) prefs.edit().remove(KEY_GEMINI_ACTIVE_KEY).apply() }
     fun setActiveGeminiKey(id: String) { prefs.edit().putString(KEY_GEMINI_ACTIVE_KEY, id).apply() }
@@ -125,8 +137,10 @@ class SecureSettingsRepository(private val context: Context) {
         saveGeminiKeys(getGeminiKeys().map { if (it.id == active.id) it.copy(usedToday = it.usedToday + 1) else it })
     }
     fun getActiveGeminiKey(): GeminiKey? {
-        val keys = getGeminiKeys().filter { it.remainingToday > 0 }
-        if (keys.isEmpty()) return getGeminiKeys().firstOrNull()
+        val keys = getGeminiKeys()
+            .filter { it.remainingToday > 0 }
+        if (keys.isEmpty()) return null
+
         val requested = prefs.getString(KEY_GEMINI_ACTIVE_KEY, "")
         return keys.firstOrNull { it.id == requested } ?: keys.first()
     }
@@ -134,7 +148,19 @@ class SecureSettingsRepository(private val context: Context) {
         prefs.edit().putString(KEY_GEMINI_KEYS, keys.joinToString("\n") { "${it.id}|${it.label.replace("|", " ")}|${it.value}|${it.dailyLimit}|${it.usedToday}|${it.day}" }).apply()
     }
     fun getGeminiApiKey(): String {
-        return getActiveGeminiKey()?.value ?: try { (BuildConfig::class.java.getField("GEMINI_API_KEY").get(null) as? String).takeUnless { it.isNullFlowKey() }.orEmpty() } catch (_: Exception) { "" }
+        val storedKeys = getGeminiKeys()
+        if (storedKeys.isNotEmpty()) {
+            // Do not silently bypass the app-managed daily budget with a different fallback key.
+            return getActiveGeminiKey()?.value.orEmpty()
+        }
+
+        return try {
+            (BuildConfig::class.java.getField("GEMINI_API_KEY").get(null) as? String)
+                .takeUnless { it.isNullFlowKey() }
+                .orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
     }
     fun setGeminiApiKey(key: String) { // preserves compatibility for old callers
         val existing = getGeminiKeys().firstOrNull()

@@ -4,6 +4,7 @@ import com.example.data.model.TranslationRequest
 import com.example.data.model.TranslationResult
 import com.example.data.model.TranslationTone
 import com.example.data.service.TranslationService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -83,6 +84,8 @@ class SubtitleTranslatorEngine(
                 } else {
                     emptySet()
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
                 // Let the per-segment fallback below make a best effort and report any items that
                 // still cannot be translated in the final progress state.
@@ -219,7 +222,7 @@ class SubtitleTranslatorEngine(
             .replace("\r\n", "\n")
             .replace("\r", "\n")
             .lineSequence()
-            .map { it.trim() }
+            .map { removeLeadingSegmentTag(it.trim()) }
             .filter { it.isNotEmpty() && it != "```" }
             .toList()
 
@@ -232,6 +235,15 @@ class SubtitleTranslatorEngine(
                 .toMap()
             else -> emptyMap()
         }
+    }
+
+    private fun removeLeadingSegmentTag(line: String): String {
+        return Regex("""^\s*\[\d+\]\s*(.*)$""")
+            .matchEntire(line)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?: line
     }
 
     /** Retries one malformed or missing batch item using the same tagged response protocol. */
@@ -252,6 +264,8 @@ class SubtitleTranslatorEngine(
 
         val result = try {
             translationService.translate(singleRequest)
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             Result.failure<TranslationResult>(Exception("Single subtitle translation failed"))
         }

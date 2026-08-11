@@ -64,6 +64,25 @@ class SubtitleTranslatorEngineTest {
     }
 
     @Test
+    fun `unexpected numeric tags in a sequential response are not shown in the subtitle text`() = runBlocking {
+        val service = FakeTranslationService(
+            responses = listOf("[99] Hello\n[100] Goodbye")
+        )
+        val file = subtitleFile(
+            SubtitleSegment(1, "00:00:01,000 --> 00:00:02,000", "你好"),
+            SubtitleSegment(2, "00:00:02,000 --> 00:00:03,000", "再见")
+        )
+
+        SubtitleTranslatorEngine(service)
+            .translateSubtitles(file, "Mandarin (Simplified)", "English", batchSize = 5)
+            .toList()
+
+        assertEquals("Hello", file.segments[0].translatedText)
+        assertEquals("Goodbye", file.segments[1].translatedText)
+        assertEquals(1, service.requests.size)
+    }
+
+    @Test
     fun `missing batch item is retried with its target language and segment tag`() = runBlocking {
         val service = FakeTranslationService(
             responses = listOf(

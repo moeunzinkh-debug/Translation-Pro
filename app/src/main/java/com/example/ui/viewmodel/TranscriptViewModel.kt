@@ -1,14 +1,20 @@
 package com.example.ui.viewmodel
 
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.repository.TranslationRepository
 import com.example.data.transcript.TranscriptChunk
 import com.example.data.transcript.TranscriptFormatter
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.IOException
 
 data class TranscriptUiState(
     val isWorking: Boolean = false,
@@ -16,11 +22,55 @@ data class TranscriptUiState(
     val chunks: List<TranscriptChunk> = emptyList(),
     val error: String? = null
 )
+
 class TranscriptViewModel(private val repository: TranslationRepository) : ViewModel() {
     private val _uiState = MutableStateFlow(TranscriptUiState())
     val uiState: StateFlow<TranscriptUiState> = _uiState.asStateFlow()
+
+    /** Transcribes bytes that are already available, primarily useful for tests and callers with cached audio. */
     fun transcribe(audio: ByteArray, mimeType: String, language: String) = viewModelScope.launch {
-        _uiState.value = _uiState.value.copy(isWorking = true, error = null)
+        if (_uiState.value.isWorking) return@launch
+        try {
+            runTranscription(audio, mimeType, language)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _uiState.value = TranscriptUiState(
+                error = e.localizedMessage ?: "Transcription failed."
+            )
+        }
+    }
+
+    /** Reads a content URI off the main thread before sending it to Gemini. */
+    fun transcribeFromUri(
+        context: Context,
+        uri: Uri,
+        mimeType: String,
+        language: String
+    ) = viewModelScope.launch {
+        if (_uiState.value.isWorking) return@launch
+        _uiState.value = TranscriptUiState(isWorking = true)
+        try {
+            val audio = withContext(Dispatchers.IO) {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            } ?: throw IOException("Unable to read the selected audio file.")
+
+            runTranscription(audio, mimeType, language)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _uiState.value = TranscriptUiState(
+                error = e.localizedMessage ?: "Could not read the audio file."
+            )
+        }
+    }
+
+    private suspend fun runTranscription(
+        audio: ByteArray,
+        mimeType: String,
+        language: String
+    ) {
+        _uiState.value = TranscriptUiState(isWorking = true)
         repository.transcribe(audio, mimeType, language).fold(
             onSuccess = { rawTranscript ->
                 val chunks = TranscriptFormatter.parse(rawTranscript)
@@ -29,9 +79,9 @@ class TranscriptViewModel(private val repository: TranslationRepository) : ViewM
                     chunks = chunks
                 )
             },
-            onFailure = {
+            onFailure = { error ->
                 _uiState.value = TranscriptUiState(
-                    error = it.localizedMessage ?: "Transcription failed."
+                    error = error.localizedMessage ?: "Transcription failed."
                 )
             }
         )

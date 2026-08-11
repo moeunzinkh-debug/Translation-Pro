@@ -1,6 +1,7 @@
 package com.example.data.repository
 
 import android.util.Base64
+import com.example.BuildConfig
 import com.example.data.api.ChatCompletionRequest
 import com.example.data.api.ChatMessage
 import com.example.data.api.GeminiApiService
@@ -8,6 +9,7 @@ import com.example.data.api.GeminiErrorEnvelope
 import com.example.data.api.GeminiInteractionContent
 import com.example.data.api.GeminiInteractionGenerationConfig
 import com.example.data.api.GeminiInteractionRequest
+import com.example.data.api.GeminiTranscriptionConfig
 import com.example.data.api.OpenAiApiService
 import com.example.data.model.AiProvider
 import com.example.data.model.GeminiModel
@@ -15,8 +17,11 @@ import com.example.data.model.TranslationRequest
 import com.example.data.model.TranslationResult
 import com.example.data.security.SecureSettingsRepository
 import com.example.data.service.TranslationService
+import com.example.data.transcript.TranscriptChunk
+import com.example.data.transcript.TranscriptFormatter
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -29,16 +34,29 @@ class TranslationRepository(
     private val settingsRepository: SecureSettingsRepository
 ) : TranslationService {
 
+    companion object {
+        // Base64 expands the payload by about one third. Keep the raw file below this limit so
+        // the complete inline Interactions request stays under Google's 20 MB request limit.
+        private const val MAX_INLINE_AUDIO_BYTES = 14 * 1024 * 1024
+    }
+
     private val moshi = Moshi.Builder()
         .addLast(KotlinJsonAdapterFactory())
         .build()
 
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
         .addInterceptor(HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            // Never write API keys or user audio/subtitle content to Logcat.
+            redactHeader("Authorization")
+            redactHeader("x-goog-api-key")
+            level = if (BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.BASIC
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
         })
         .build()
 
@@ -65,9 +83,12 @@ class TranslationRepository(
         val apiKey = settingsRepository.getApiKeyForProvider(provider)
 
         if (apiKey.isBlank()) {
-            return Result.failure(
-                IllegalArgumentException("API Key for ${provider.displayName} is missing. Please configure it in Settings.")
-            )
+            val message = if (provider == AiProvider.GEMINI && settingsRepository.getGeminiKeys().isNotEmpty()) {
+                "All Gemini keys have reached their app-managed daily request budget. Add another key or wait until tomorrow."
+            } else {
+                "API Key for ${provider.displayName} is missing. Please configure it in Settings."
+            }
+            return Result.failure(IllegalArgumentException(message))
         }
 
         // Network call with 1 automatic retry on failure
@@ -84,6 +105,8 @@ class TranslationRepository(
                     AiProvider.CUSTOM -> translateViaCustom(request, apiKey)
                 }
                 return Result.success(result)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 lastException = e
                 if (attempts < 2 && (e is IOException || isRetryableServerError(e))) {
@@ -100,7 +123,12 @@ class TranslationRepository(
     override suspend fun testConnection(provider: AiProvider): Result<String> {
         val apiKey = settingsRepository.getApiKeyForProvider(provider)
         if (apiKey.isBlank()) {
-            return Result.failure(IllegalArgumentException("API Key is empty."))
+            val message = if (provider == AiProvider.GEMINI && settingsRepository.getGeminiKeys().isNotEmpty()) {
+                "All Gemini keys have reached their app-managed daily request budget."
+            } else {
+                "API Key is empty."
+            }
+            return Result.failure(IllegalArgumentException(message))
         }
 
         val testRequest = TranslationRequest(
@@ -118,6 +146,8 @@ class TranslationRepository(
                 AiProvider.CUSTOM -> translateViaCustom(testRequest, apiKey)
             }
             Result.success("Connection successful! Response: \"${result.translatedText.trim()}\"")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -129,7 +159,7 @@ class TranslationRepository(
     ): TranslationResult {
         val baseUrl = settingsRepository.getSeaLionBaseUrl()
         val model = settingsRepository.getSeaLionModel()
-        val endpointUrl = if (baseUrl.endsWith("chat/completions")) baseUrl else "${baseUrl}chat/completions"
+        val endpointUrl = chatCompletionsEndpoint(baseUrl)
 
         val systemPrompt = buildSystemPrompt(request)
         val userContent = buildUserContent(request)
@@ -202,7 +232,7 @@ class TranslationRepository(
     ): TranslationResult {
         val baseUrl = settingsRepository.getCustomBaseUrl()
         val model = settingsRepository.getCustomModel()
-        val endpointUrl = if (baseUrl.endsWith("chat/completions")) baseUrl else "${baseUrl}chat/completions"
+        val endpointUrl = chatCompletionsEndpoint(baseUrl)
 
         val systemPrompt = buildSystemPrompt(request)
         val userContent = buildUserContent(request)
@@ -287,7 +317,12 @@ class TranslationRepository(
     suspend fun listGeminiModels(): Result<List<GeminiModel>> = try {
         val apiKey = settingsRepository.getGeminiApiKey()
         if (apiKey.isBlank()) {
-            throw IllegalArgumentException("Add or select a Gemini API key before loading models.")
+            val message = if (settingsRepository.getGeminiKeys().isNotEmpty()) {
+                "All Gemini keys have reached their app-managed daily request budget."
+            } else {
+                "Add or select a Gemini API key before loading models."
+            }
+            throw IllegalArgumentException(message)
         }
 
         val allModels = mutableListOf<GeminiModel>()
@@ -353,6 +388,8 @@ class TranslationRepository(
             throw IOException("No Gemini text-generation models are available for this API key.")
         }
         Result.success(models)
+    } catch (e: CancellationException) {
+        throw e
     } catch (e: Exception) {
         Result.failure(e)
     }
@@ -360,7 +397,20 @@ class TranslationRepository(
     /** Sends an audio clip to Gemini and returns a speaker-labelled transcript. */
     suspend fun transcribe(audio: ByteArray, mimeType: String, languageHint: String): Result<String> = try {
         val apiKey = settingsRepository.getGeminiApiKey()
-        if (apiKey.isBlank()) throw IllegalArgumentException("Add a Gemini API key in Settings first.")
+        if (apiKey.isBlank()) {
+            val message = if (settingsRepository.getGeminiKeys().isNotEmpty()) {
+                "All Gemini keys have reached their app-managed daily request budget."
+            } else {
+                "Add a Gemini API key in Settings first."
+            }
+            throw IllegalArgumentException(message)
+        }
+        if (audio.isEmpty()) throw IllegalArgumentException("The selected audio file is empty.")
+        if (audio.size > MAX_INLINE_AUDIO_BYTES) {
+            throw IllegalArgumentException(
+                "Audio file is too large for inline transcription. Please choose a file smaller than 14 MB."
+            )
+        }
 
         val model = normalizedGeminiModel(settingsRepository.getGeminiModel())
         val speakerInstruction = """
@@ -383,15 +433,18 @@ class TranslationRepository(
         val request = GeminiInteractionRequest(
             model = model,
             input = listOf(
+                GeminiInteractionContent(type = "text", text = prompt),
                 GeminiInteractionContent(
                     type = "audio",
-                    mimeType = mimeType,
+                    mimeType = normalizeAudioMimeType(mimeType),
                     data = Base64.encodeToString(audio, Base64.NO_WRAP)
-                ),
-                GeminiInteractionContent(type = "text", text = prompt)
+                )
             ),
             systemInstruction = speakerInstruction,
             generationConfig = GeminiInteractionGenerationConfig(temperature = 0.1),
+            transcriptionConfig = GeminiTranscriptionConfig(
+                diarizationMode = "speaker"
+            ),
             store = false
         )
 
@@ -404,22 +457,96 @@ class TranslationRepository(
             )
         }
 
-        val text = response.body()?.steps
-            .orEmpty()
+        val responseSteps = response.body()?.steps.orEmpty()
+        val outputContents = responseSteps
             .asSequence()
-            .filter { it.type == "model_output" }
+            .filter {
+                it.type.equals("model_output", ignoreCase = true) ||
+                    it.type.equals("transcription", ignoreCase = true)
+            }
             .flatMap { it.content.asSequence() }
-            .filter { it.type == "text" }
-            .mapNotNull { it.text }
-            .joinToString(separator = "")
-            .trim()
-            .takeIf { it.isNotBlank() }
+            .toList()
+        val wordInfoContents = responseSteps
+            .asSequence()
+            .flatMap { it.content.asSequence() }
+            .filter { it.type.equals("word_info", ignoreCase = true) }
+            .toList()
+
+        // Newer Interactions API responses can return word_info blocks with a speaker
+        // attribution. Prefer those because they are produced by the ASR diarization pipeline.
+        // The prompt-labelled text fallback keeps this compatible with older model responses.
+        val text = formatWordInfoTranscript(wordInfoContents)
+            ?: outputContents
+                .asSequence()
+                .filter { it.type.equals("text", ignoreCase = true) }
+                .mapNotNull { it.text }
+                .joinToString(separator = "")
+                .trim()
+                .takeIf { it.isNotBlank() }
             ?: throw IOException("Gemini returned an empty transcript.")
 
         settingsRepository.recordGeminiRequest()
         Result.success(text)
+    } catch (e: CancellationException) {
+        throw e
     } catch (e: Exception) {
         Result.failure(e)
+    }
+
+    private fun formatWordInfoTranscript(
+        contents: List<GeminiInteractionContent>
+    ): String? {
+        val words = contents.filter {
+            it.type.equals("word_info", ignoreCase = true) && !it.text.isNullOrBlank()
+        }
+        if (words.isEmpty()) return null
+
+        val chunks = mutableListOf<TranscriptChunk>()
+        var currentSpeaker: String? = null
+        val currentText = StringBuilder()
+
+        fun flush() {
+            val speaker = currentSpeaker
+            val text = currentText.toString().trim()
+            if (speaker != null && text.isNotBlank()) {
+                chunks += TranscriptChunk(speaker, text)
+            }
+            currentText.setLength(0)
+        }
+
+        words.forEach { wordInfo ->
+            val speaker = normalizeSpeakerLabel(wordInfo.speaker)
+            if (currentSpeaker != null && currentSpeaker != speaker) {
+                flush()
+            }
+            currentSpeaker = speaker
+
+            val word = wordInfo.text.orEmpty().trim()
+            if (word.isNotBlank()) {
+                val startsWithPunctuation = word.first() in setOf(',', '.', '!', '?', ';', ':', ')', ']')
+                if (currentText.isNotEmpty() && !startsWithPunctuation) currentText.append(' ')
+                currentText.append(word)
+            }
+        }
+        flush()
+
+        return chunks.takeIf { it.isNotEmpty() }?.let { TranscriptFormatter.format(it) }
+    }
+
+    private fun normalizeSpeakerLabel(rawLabel: String?): String {
+        val raw = rawLabel?.trim().orEmpty()
+        val id = raw.replaceFirst(Regex("(?i)^(speaker|spk|person)[ _-]*"), "").ifBlank { "1" }
+        return "Speaker $id"
+    }
+
+    private fun normalizeAudioMimeType(mimeType: String): String {
+        val normalized = mimeType.trim().lowercase().substringBefore(';')
+        return when (normalized) {
+            "audio/x-wav", "audio/wave" -> "audio/wav"
+            "audio/x-m4a" -> "audio/mp4"
+            "audio/x-mpeg" -> "audio/mpeg"
+            else -> normalized.takeIf { it.startsWith("audio/") } ?: "audio/mpeg"
+        }
     }
 
     private fun buildSystemPrompt(request: TranslationRequest): String {
@@ -516,6 +643,18 @@ class TranslationRepository(
 
     private fun normalizedGeminiModel(model: String): String {
         return model.trim().removePrefix("models/")
+    }
+
+    private fun chatCompletionsEndpoint(baseUrl: String): String {
+        val normalized = baseUrl.trim().trimEnd('/')
+        require(normalized.startsWith("https://") || normalized.startsWith("http://")) {
+            "API base URL must start with http:// or https://."
+        }
+        return if (normalized.endsWith("/chat/completions", ignoreCase = true)) {
+            normalized
+        } else {
+            "$normalized/chat/completions"
+        }
     }
 
     private fun geminiApiException(

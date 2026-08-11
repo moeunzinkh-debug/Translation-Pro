@@ -1,11 +1,8 @@
 package com.example.ui.screens
 
 import android.net.Uri
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -56,7 +53,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.ui.components.LanguageData
 import com.example.ui.viewmodel.SubtitleViewModel
 
@@ -177,6 +173,7 @@ fun SubtitleScreen(viewModel: SubtitleViewModel) {
                     ) {
                         Button(
                             onClick = { fileLauncher.launch("*/*") },
+                            enabled = !state.isParsing && !state.isTranslating,
                             modifier = Modifier
                                 .weight(1f)
                                 .testTag("select_subtitle_file_button")
@@ -188,6 +185,7 @@ fun SubtitleScreen(viewModel: SubtitleViewModel) {
 
                         OutlinedButton(
                             onClick = { viewModel.loadSampleSubtitle() },
+                            enabled = !state.isParsing && !state.isTranslating,
                             modifier = Modifier
                                 .weight(1f)
                                 .testTag("load_sample_subtitle_button")
@@ -366,7 +364,11 @@ fun SubtitleScreen(viewModel: SubtitleViewModel) {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = if (prog.isComplete) "Translation Complete!" else "Batch ${prog.currentBatch} of ${prog.totalBatches}",
+                                    text = when {
+                                        prog.error != null -> "Translation completed with errors"
+                                        prog.isComplete -> "Translation Complete!"
+                                        else -> "Batch ${prog.currentBatch} of ${prog.totalBatches}"
+                                    },
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -409,7 +411,7 @@ fun SubtitleScreen(viewModel: SubtitleViewModel) {
             }
 
             // Export & Share Options
-            if (state.progress?.isComplete == true) {
+            if (state.progress?.isComplete == true && state.progress?.error == null) {
                 item {
                     Card(
                         shape = RoundedCornerShape(16.dp),

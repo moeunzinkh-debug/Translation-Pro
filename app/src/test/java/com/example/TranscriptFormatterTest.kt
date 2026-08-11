@@ -41,6 +41,14 @@ class TranscriptFormatterTest {
     }
 
     @Test
+    fun `asr speaker labels are normalized for display`() {
+        val chunks = TranscriptFormatter.parse("spk_1: Hello\nspk_2: Hi")
+
+        assertEquals(listOf("Speaker 1", "Speaker 2"), chunks.map { it.speaker })
+        assertEquals(listOf("Hello", "Hi"), chunks.map { it.text })
+    }
+
+    @Test
     fun `unlabelled legacy transcript remains visible as one fallback chunk`() {
         val chunks = TranscriptFormatter.parse("A transcript without diarization")
 

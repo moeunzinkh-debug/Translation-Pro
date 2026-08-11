@@ -10,12 +10,20 @@ data class TranscriptChunk(
  * Parses and formats the speaker-labelled transcript returned by Gemini.
  *
  * The model is asked to use `[Speaker 1]` / `[Speaker 2]` markers. This parser also accepts
- * `Speaker 1:` and `Person 1:` so a small formatting variation does not remove speaker chunks
- * from the UI. Consecutive lines for the same speaker are merged into one chunk.
+ * `Speaker 1:`, `Person 1:`, and ASR labels such as `spk_1` so a small formatting variation does
+ * not remove speaker chunks from the UI. Consecutive lines for the same speaker are merged into one chunk.
  */
 object TranscriptFormatter {
-    private val speakerMarker = Regex(
-        """^\s*(?:\[(?:Speaker|Person)\s+([A-Za-z0-9_-]+)\]|(?:Speaker|Person)\s+([A-Za-z0-9_-]+)\s*:?)\s*(.*)$""",
+    private val bracketSpeakerMarker = Regex(
+        """^\s*\[(?:Speaker|Person)\s+([A-Za-z0-9_-]+)\]\s*:?\s*(.*)$""",
+        RegexOption.IGNORE_CASE
+    )
+    private val namedSpeakerMarker = Regex(
+        """^\s*(?:Speaker|Person)\s+([A-Za-z0-9_-]+)\s*:?\s*(.*)$""",
+        RegexOption.IGNORE_CASE
+    )
+    private val shortSpeakerMarker = Regex(
+        """^\s*\[?spk[_-]?([A-Za-z0-9_-]+)\]?\s*:?\s*(.*)$""",
         RegexOption.IGNORE_CASE
     )
 
@@ -39,19 +47,19 @@ object TranscriptFormatter {
             .lineSequence()
             .forEach { rawLine ->
                 val line = rawLine.trim()
-                val marker = speakerMarker.matchEntire(line)
+                val marker = bracketSpeakerMarker.matchEntire(line)
+                    ?: namedSpeakerMarker.matchEntire(line)
+                    ?: shortSpeakerMarker.matchEntire(line)
 
                 if (marker != null) {
-                    val speakerId = marker.groupValues[1]
-                        .ifBlank { marker.groupValues[2] }
-                    val speaker = "Speaker $speakerId"
+                    val speaker = "Speaker ${marker.groupValues[1]}"
 
                     if (currentSpeaker != null && currentSpeaker != speaker) {
                         flushCurrentChunk()
                     }
                     currentSpeaker = speaker
 
-                    val firstLine = marker.groupValues[3].trim()
+                    val firstLine = marker.groupValues[2].trim()
                     if (firstLine.isNotBlank()) currentLines += firstLine
                 } else if (line.isNotBlank() && currentSpeaker != null) {
                     currentLines += line

@@ -11,6 +11,7 @@ import com.example.data.model.TranslationResult
 import com.example.data.model.TranslationTone
 import com.example.data.repository.TranslationRepository
 import com.example.data.security.SecureSettingsRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -57,8 +58,10 @@ class TranslationViewModel(
     private val settingsRepository: SecureSettingsRepository
 ) : ViewModel() {
 
-    // Translations already shown for the current input, sent to the AI so it avoids repeats
+    // Translations already shown for the current input, sent to the AI so it avoids repeats.
     private val shownTranslations = mutableListOf<String>()
+    // Prevent a late response for an older input/language selection from replacing the current UI.
+    private var translationGeneration = 0
 
     private val _uiState = MutableStateFlow(
         TranslationUiState(
@@ -75,29 +78,58 @@ class TranslationViewModel(
         viewModelScope.launch {
             settingsRepository.selectedProviderFlow.collect { provider ->
                 val apiKey = settingsRepository.getApiKeyForProvider(provider)
+                val providerChanged = _uiState.value.activeProvider != provider
+                if (providerChanged) {
+                    translationGeneration++
+                    shownTranslations.clear()
+                }
                 _uiState.value = _uiState.value.copy(
                     activeProvider = provider,
-                    isKeyMissing = apiKey.isBlank()
+                    isKeyMissing = apiKey.isBlank(),
+                    isLoading = if (providerChanged) false else _uiState.value.isLoading,
+                    translatedText = if (providerChanged) "" else _uiState.value.translatedText,
+                    slangNotes = if (providerChanged) null else _uiState.value.slangNotes,
+                    errorMessage = if (providerChanged) null else _uiState.value.errorMessage,
+                    translationAttempt = if (providerChanged) 0 else _uiState.value.translationAttempt,
+                    isAlternativeResult = if (providerChanged) false else _uiState.value.isAlternativeResult,
+                    lastTranslatedInput = if (providerChanged) "" else _uiState.value.lastTranslatedInput,
+                    lastUsedSourceLanguage = if (providerChanged) "" else _uiState.value.lastUsedSourceLanguage,
+                    lastUsedTargetLanguage = if (providerChanged) "" else _uiState.value.lastUsedTargetLanguage,
+                    lastUsedTone = if (providerChanged) null else _uiState.value.lastUsedTone
                 )
             }
         }
     }
 
+    fun refreshProviderStatus() {
+        val provider = settingsRepository.getSelectedProvider()
+        val apiKey = settingsRepository.getApiKeyForProvider(provider)
+        _uiState.value = _uiState.value.copy(
+            activeProvider = provider,
+            isKeyMissing = apiKey.isBlank()
+        )
+    }
+
     fun onInputTextChanged(text: String) {
-        _uiState.value = _uiState.value.copy(inputText = text, errorMessage = null)
+        if (text == _uiState.value.inputText) return
+        clearCurrentResult()
+        _uiState.value = _uiState.value.copy(inputText = text)
     }
 
     fun onSourceLanguageSelected(lang: String) {
+        clearCurrentResult()
         _uiState.value = _uiState.value.copy(sourceLanguage = lang)
         settingsRepository.setDefaultSourceLanguage(lang)
     }
 
     fun onTargetLanguageSelected(lang: String) {
+        clearCurrentResult()
         _uiState.value = _uiState.value.copy(targetLanguage = lang)
         settingsRepository.setDefaultTargetLanguage(lang)
     }
 
     fun onToneSelected(tone: TranslationTone) {
+        clearCurrentResult()
         _uiState.value = _uiState.value.copy(tone = tone)
         settingsRepository.setDefaultTone(tone)
     }
@@ -106,14 +138,35 @@ class TranslationViewModel(
         val currentSource = _uiState.value.sourceLanguage
         val currentTarget = _uiState.value.targetLanguage
         if (currentSource != "Auto-detect") {
+            clearCurrentResult()
             _uiState.value = _uiState.value.copy(
                 sourceLanguage = currentTarget,
                 targetLanguage = currentSource
             )
+            settingsRepository.setDefaultSourceLanguage(currentTarget)
+            settingsRepository.setDefaultTargetLanguage(currentSource)
         }
     }
 
+    private fun clearCurrentResult() {
+        translationGeneration++
+        shownTranslations.clear()
+        _uiState.value = _uiState.value.copy(
+            translatedText = "",
+            slangNotes = null,
+            errorMessage = null,
+            isLoading = false,
+            translationAttempt = 0,
+            isAlternativeResult = false,
+            lastTranslatedInput = "",
+            lastUsedSourceLanguage = "",
+            lastUsedTargetLanguage = "",
+            lastUsedTone = null
+        )
+    }
+
     fun clearInput() {
+        translationGeneration++
         shownTranslations.clear()
         _uiState.value = _uiState.value.copy(
             inputText = "",
@@ -130,31 +183,42 @@ class TranslationViewModel(
     }
 
     fun translate() {
-        val text = _uiState.value.inputText.trim()
+        val currentState = _uiState.value
+        if (currentState.isLoading) return
+
+        val text = currentState.inputText.trim()
         if (text.isEmpty()) {
-            _uiState.value = _uiState.value.copy(errorMessage = "Please enter text to translate.")
+            _uiState.value = currentState.copy(errorMessage = "Please enter text to translate.")
             return
         }
 
         val provider = settingsRepository.getSelectedProvider()
         val apiKey = settingsRepository.getApiKeyForProvider(provider)
         if (apiKey.isBlank()) {
-            _uiState.value = _uiState.value.copy(
-                errorMessage = "API Key for ${provider.displayName} is missing. Configure it in Settings.",
+            val message = if (provider == AiProvider.GEMINI && settingsRepository.getGeminiKeys().isNotEmpty()) {
+                "All Gemini keys have reached their app-managed daily request budget. Add another key or wait until tomorrow."
+            } else {
+                "API Key for ${provider.displayName} is missing. Configure it in Settings."
+            }
+            _uiState.value = currentState.copy(
+                errorMessage = message,
                 isKeyMissing = true
             )
             return
         }
 
-        // If the user taps Translate again on the SAME text/languages/tone, they want
-        // a different, easier-to-understand version of the answer - not the same one.
-        val isRephrase = _uiState.value.willRephraseOnTranslate()
-        val attempt = if (isRephrase) _uiState.value.translationAttempt + 1 else 1
-        if (!isRephrase) {
-            shownTranslations.clear()
-        }
+        // Capture the complete request context before launching. The user can edit the input or
+        // change languages while the network request is running; that must not alter this request.
+        val sourceLanguage = currentState.sourceLanguage
+        val targetLanguage = currentState.targetLanguage
+        val tone = currentState.tone
+        val isRephrase = currentState.willRephraseOnTranslate()
+        val attempt = if (isRephrase) currentState.translationAttempt + 1 else 1
+        if (!isRephrase) shownTranslations.clear()
+        val previousTranslations = shownTranslations.toList()
+        val requestGeneration = ++translationGeneration
 
-        _uiState.value = _uiState.value.copy(
+        _uiState.value = currentState.copy(
             isLoading = true,
             errorMessage = null,
             slangNotes = null,
@@ -162,26 +226,40 @@ class TranslationViewModel(
         )
 
         viewModelScope.launch {
-            val req = TranslationRequest(
-                sourceLanguage = _uiState.value.sourceLanguage,
-                targetLanguage = _uiState.value.targetLanguage,
-                text = text,
-                tone = _uiState.value.tone,
-                isSubtitle = false,
-                alternativeAttempt = if (isRephrase) attempt - 1 else 0,
-                previousTranslations = shownTranslations.toList()
-            )
+            val result = try {
+                translationRepository.translate(
+                    TranslationRequest(
+                        sourceLanguage = sourceLanguage,
+                        targetLanguage = targetLanguage,
+                        text = text,
+                        tone = tone,
+                        isSubtitle = false,
+                        alternativeAttempt = if (isRephrase) attempt - 1 else 0,
+                        previousTranslations = previousTranslations
+                    )
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure<TranslationResult>(e)
+            }
 
-            val result = translationRepository.translate(req)
+            // A newer input or language selection has invalidated this response.
+            if (requestGeneration != translationGeneration) return@launch
 
             if (result.isSuccess) {
                 val data = result.getOrNull()
-                val newTranslation = data?.translatedText ?: ""
-                if (newTranslation.isNotBlank()) {
-                    shownTranslations.add(newTranslation)
-                    // Keep the prompt history bounded to the most recent few variants
-                    while (shownTranslations.size > 5) shownTranslations.removeAt(0)
+                val newTranslation = data?.translatedText.orEmpty().trim()
+                if (newTranslation.isBlank()) {
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        errorMessage = "Translation provider returned an empty response."
+                    )
+                    return@launch
                 }
+
+                shownTranslations.add(newTranslation)
+                while (shownTranslations.size > 5) shownTranslations.removeAt(0)
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     translatedText = newTranslation,
@@ -190,9 +268,9 @@ class TranslationViewModel(
                     translationAttempt = attempt,
                     isAlternativeResult = isRephrase,
                     lastTranslatedInput = text,
-                    lastUsedSourceLanguage = _uiState.value.sourceLanguage,
-                    lastUsedTargetLanguage = _uiState.value.targetLanguage,
-                    lastUsedTone = _uiState.value.tone
+                    lastUsedSourceLanguage = sourceLanguage,
+                    lastUsedTargetLanguage = targetLanguage,
+                    lastUsedTone = tone
                 )
             } else {
                 val err = result.exceptionOrNull()?.message ?: "Translation failed."
