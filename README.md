@@ -26,11 +26,14 @@
 3. **Gemini Key Pool & Daily Budget**
    - Add and remove an unlimited number of encrypted Gemini API keys.
    - Select an active key and see its app-managed daily request budget and remaining requests.
+   - When Gemini returns a quota or rate-limit response, the exhausted key is marked unavailable for the day and the app automatically fails over to the next available key.
    - Gemini does not provide a remaining project quota endpoint for API keys; the displayed amount is the transparent local request budget configured for that key.
 
 4. **Gemini Audio Transcript**
-   - Select an audio file and generate a plain-text transcript through Gemini's multimodal API.
-   - Copy the completed transcript directly from the app.
+   - Select an audio file and generate a transcript through Gemini's multimodal API.
+   - Separates the transcript into speaker-labelled chunks (`Speaker 1`, `Speaker 2`, etc.) whenever the voice changes.
+   - Keeps the same speaker number when that person speaks again, and merges consecutive speech from the same speaker.
+   - Copy or export the completed speaker-separated transcript directly from the app.
 
 5. **Media Subtitle Translation (.srt & .vtt)**
    - Parses SubRip (`.srt`) and WebVTT (`.vtt`) subtitle files.

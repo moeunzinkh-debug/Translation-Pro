@@ -5,6 +5,7 @@ import com.example.data.api.GeminiInteractionGenerationConfig
 import com.example.data.api.GeminiInteractionRequest
 import com.example.data.api.GeminiInteractionResponse
 import com.example.data.api.GeminiListModelsResponse
+import com.example.data.api.GeminiTranscriptionConfig
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import org.junit.Assert.assertEquals
@@ -36,6 +37,20 @@ class GeminiDtosTest {
     }
 
     @Test
+    fun `transcription config enables speaker diarization`() {
+        val request = GeminiInteractionRequest(
+            model = "gemini-3.6-flash",
+            input = listOf(GeminiInteractionContent(type = "text", text = "Transcribe")),
+            transcriptionConfig = GeminiTranscriptionConfig(diarizationMode = "speaker"),
+            store = false
+        )
+
+        val json = moshi.adapter(GeminiInteractionRequest::class.java).toJson(request)
+
+        assertTrue(json.contains("\"transcription_config\":{\"diarization_mode\":\"speaker\"}"))
+    }
+
+    @Test
     fun `interaction response parses model output text`() {
         val json = """
             {
@@ -59,6 +74,29 @@ class GeminiDtosTest {
             .joinToString("")
 
         assertEquals("Hola mundo", output)
+    }
+
+    @Test
+    fun `word info response preserves speaker attribution`() {
+        val json = """
+            {
+              "steps": [
+                {
+                  "type": "model_output",
+                  "content": [
+                    {"type": "word_info", "text": "Hello", "speaker": "spk_1"}
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val response = moshi.adapter(GeminiInteractionResponse::class.java).fromJson(json)
+        val word = response?.steps?.single()?.content?.single()
+
+        assertEquals("word_info", word?.type)
+        assertEquals("Hello", word?.text)
+        assertEquals("spk_1", word?.speaker)
     }
 
     @Test

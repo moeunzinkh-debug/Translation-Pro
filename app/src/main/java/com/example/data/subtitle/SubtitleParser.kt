@@ -4,7 +4,10 @@ object SubtitleParser {
 
     fun parse(fileName: String, content: String): SubtitleFileContent {
         val extension = fileName.substringAfterLast('.', "").lowercase()
-        val format = if (extension == "vtt" || content.trimStart().startsWith("WEBVTT")) {
+        val format = if (
+            extension == "vtt" || content.removePrefix("\uFEFF").trimStart()
+                .startsWith("WEBVTT", ignoreCase = true)
+        ) {
             SubtitleFormat.VTT
         } else {
             SubtitleFormat.SRT
@@ -25,59 +28,75 @@ object SubtitleParser {
 
     private fun parseSrt(raw: String): List<SubtitleSegment> {
         val list = mutableListOf<SubtitleSegment>()
-        // Normalize line breaks
-        val normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
-        val blocks = normalized.split("\n\n")
+        val normalized = normalizeLineBreaks(raw)
+        val blocks = normalized.split(Regex("\\n{2,}"))
+        var nextGeneratedIndex = 1
 
-        var currentIndex = 1
         for (block in blocks) {
             val lines = block.lines().filter { it.isNotBlank() }
-            if (lines.size >= 2) {
-                val timecodeLineIndex = lines.indexOfFirst { it.contains("-->") }
-                if (timecodeLineIndex != -1) {
-                    val timecode = lines[timecodeLineIndex].trim()
-                    val dialogueLines = lines.drop(timecodeLineIndex + 1)
-                    val originalText = dialogueLines.joinToString("\n").trim()
-                    if (originalText.isNotEmpty()) {
-                        list.add(
-                            SubtitleSegment(
-                                index = currentIndex++,
-                                timecode = timecode,
-                                originalText = originalText
-                            )
-                        )
-                    }
-                }
-            }
+            val timecodeLineIndex = lines.indexOfFirst { it.contains("-->") }
+            if (timecodeLineIndex == -1) continue
+
+            val identifier = lines
+                .take(timecodeLineIndex)
+                .lastOrNull()
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+            val parsedIndex = identifier?.toIntOrNull()
+            val index = parsedIndex ?: nextAvailableIndex(nextGeneratedIndex, list)
+            nextGeneratedIndex = maxOf(nextGeneratedIndex, index + 1)
+
+            val originalText = lines
+                .drop(timecodeLineIndex + 1)
+                .joinToString("\n")
+                .trim()
+            if (originalText.isEmpty()) continue
+
+            list += SubtitleSegment(
+                index = index,
+                timecode = lines[timecodeLineIndex].trim(),
+                originalText = originalText,
+                cueIdentifier = identifier
+            )
         }
         return list
     }
 
     private fun parseVtt(raw: String): List<SubtitleSegment> {
         val list = mutableListOf<SubtitleSegment>()
-        val normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
-        val blocks = normalized.split("\n\n")
+        val normalized = normalizeLineBreaks(raw)
+        val blocks = normalized.split(Regex("\\n{2,}"))
+        var nextGeneratedIndex = 1
 
-        var currentIndex = 1
         for (block in blocks) {
             val lines = block.lines().filter { it.isNotBlank() }
-            if (lines.none { it.startsWith("WEBVTT") || it.startsWith("NOTE") }) {
-                val timecodeLineIndex = lines.indexOfFirst { it.contains("-->") }
-                if (timecodeLineIndex != -1) {
-                    val timecode = lines[timecodeLineIndex].trim()
-                    val dialogueLines = lines.drop(timecodeLineIndex + 1)
-                    val originalText = dialogueLines.joinToString("\n").trim()
-                    if (originalText.isNotEmpty()) {
-                        list.add(
-                            SubtitleSegment(
-                                index = currentIndex++,
-                                timecode = timecode,
-                                originalText = originalText
-                            )
-                        )
-                    }
-                }
-            }
+            if (lines.isEmpty() || lines.first().startsWith("WEBVTT", ignoreCase = true)) continue
+            if (lines.first().startsWith("NOTE", ignoreCase = true)) continue
+
+            val timecodeLineIndex = lines.indexOfFirst { it.contains("-->") }
+            if (timecodeLineIndex == -1) continue
+
+            val identifier = lines
+                .take(timecodeLineIndex)
+                .lastOrNull()
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+            val parsedIndex = identifier?.toIntOrNull()
+            val index = parsedIndex ?: nextAvailableIndex(nextGeneratedIndex, list)
+            nextGeneratedIndex = maxOf(nextGeneratedIndex, index + 1)
+
+            val originalText = lines
+                .drop(timecodeLineIndex + 1)
+                .joinToString("\n")
+                .trim()
+            if (originalText.isEmpty()) continue
+
+            list += SubtitleSegment(
+                index = index,
+                timecode = lines[timecodeLineIndex].trim(),
+                originalText = originalText,
+                cueIdentifier = identifier
+            )
         }
         return list
     }
@@ -87,17 +106,33 @@ object SubtitleParser {
         if (subtitleFile.format == SubtitleFormat.VTT) {
             sb.append("WEBVTT\n\n")
             for (segment in subtitleFile.segments) {
-                sb.append("${segment.index}\n")
+                segment.cueIdentifier?.let { sb.append("$it\n") }
                 sb.append("${segment.timecode}\n")
                 sb.append("${segment.translatedText ?: segment.originalText}\n\n")
             }
         } else {
             for (segment in subtitleFile.segments) {
-                sb.append("${segment.index}\n")
+                sb.append("${segment.cueIdentifier ?: segment.index}\n")
                 sb.append("${segment.timecode}\n")
                 sb.append("${segment.translatedText ?: segment.originalText}\n\n")
             }
         }
         return sb.toString().trim()
+    }
+
+    private fun normalizeLineBreaks(raw: String): String {
+        return raw.removePrefix("\uFEFF")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+    }
+
+    private fun nextAvailableIndex(
+        start: Int,
+        segments: List<SubtitleSegment>
+    ): Int {
+        val used = segments.map { it.index }.toHashSet()
+        var candidate = start
+        while (candidate in used) candidate++
+        return candidate
     }
 }

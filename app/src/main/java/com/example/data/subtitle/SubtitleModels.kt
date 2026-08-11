@@ -6,10 +6,13 @@ enum class SubtitleFormat(val extension: String, val displayName: String) {
 }
 
 data class SubtitleSegment(
+    /** Numeric internal ID used by the translation batch protocol. */
     val index: Int,
     val timecode: String,
     val originalText: String,
-    var translatedText: String? = null
+    var translatedText: String? = null,
+    /** Original cue identifier, including non-numeric WebVTT identifiers when present. */
+    val cueIdentifier: String? = null
 )
 
 data class SubtitleFileContent(

@@ -22,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -76,12 +77,24 @@ class MainActivity : ComponentActivity() {
                 val subtitleViewModel: SubtitleViewModel = viewModel(factory = factory)
                 val settingsViewModel: SettingsViewModel = viewModel(factory = factory)
                 val transcriptViewModel: TranscriptViewModel = viewModel(factory = factory)
+                val incomingSubtitleUri = remember { intent?.data }
+
+                LaunchedEffect(incomingSubtitleUri) {
+                    incomingSubtitleUri?.let { uri ->
+                        subtitleViewModel.loadSubtitleFromUri(
+                            context = this@MainActivity,
+                            uri = uri,
+                            nameHint = uri.lastPathSegment
+                        )
+                    }
+                }
 
                 TranslateProApp(
                     translationViewModel = translationViewModel,
                     subtitleViewModel = subtitleViewModel,
                     settingsViewModel = settingsViewModel,
-                    transcriptViewModel = transcriptViewModel
+                    transcriptViewModel = transcriptViewModel,
+                    initialTab = if (incomingSubtitleUri != null) 1 else 0
                 )
             }
         }
@@ -94,9 +107,10 @@ fun TranslateProApp(
     translationViewModel: TranslationViewModel,
     subtitleViewModel: SubtitleViewModel,
     settingsViewModel: SettingsViewModel,
-    transcriptViewModel: TranscriptViewModel
+    transcriptViewModel: TranscriptViewModel,
+    initialTab: Int = 0
 ) {
-    var selectedTab by remember { mutableIntStateOf(0) }
+    var selectedTab by remember { mutableIntStateOf(initialTab.coerceIn(0, 3)) }
 
     val titles = listOf("Translate Pro", "Subtitle Translator", "Transcript", "API Key Settings")
 

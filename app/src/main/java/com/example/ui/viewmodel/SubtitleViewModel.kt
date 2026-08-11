@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.model.AiProvider
 import com.example.data.model.TranslationTone
 import com.example.data.repository.TranslationRepository
 import com.example.data.security.SecureSettingsRepository
@@ -13,6 +14,7 @@ import com.example.data.subtitle.SubtitleFileContent
 import com.example.data.subtitle.SubtitleParser
 import com.example.data.subtitle.SubtitleProgress
 import com.example.data.subtitle.SubtitleTranslatorEngine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -53,25 +55,39 @@ class SubtitleViewModel(
     private val engine = SubtitleTranslatorEngine(translationRepository)
 
     fun onSourceLanguageSelected(lang: String) {
+        if (_uiState.value.isTranslating) return
+        clearPreviousTranslation()
         _uiState.value = _uiState.value.copy(sourceLanguage = lang)
+        settingsRepository.setDefaultSourceLanguage(lang)
     }
 
     fun onTargetLanguageSelected(lang: String) {
+        if (_uiState.value.isTranslating) return
+        clearPreviousTranslation()
         _uiState.value = _uiState.value.copy(targetLanguage = lang)
+        settingsRepository.setDefaultTargetLanguage(lang)
     }
 
     fun onToneSelected(tone: TranslationTone) {
+        if (_uiState.value.isTranslating) return
+        clearPreviousTranslation()
         _uiState.value = _uiState.value.copy(tone = tone)
+        settingsRepository.setDefaultTone(tone)
     }
 
     fun onBatchSizeSelected(size: Int) {
-        _uiState.value = _uiState.value.copy(batchSize = size)
+        if (_uiState.value.isTranslating) return
+        _uiState.value = _uiState.value.copy(batchSize = size.coerceAtLeast(1))
     }
 
     fun loadSubtitleFromUri(context: Context, uri: Uri, nameHint: String? = null) {
+        if (_uiState.value.isTranslating || _uiState.value.isParsing) return
+        _uiState.value.subtitleFile?.segments?.forEach { it.translatedText = null }
         _uiState.value = _uiState.value.copy(
+            subtitleFile = null,
             isParsing = true,
             errorMessage = null,
+            infoMessage = null,
             exportedFilePath = null,
             progress = null
         )
@@ -94,7 +110,9 @@ class SubtitleViewModel(
                     return@launch
                 }
 
-                val parsed = SubtitleParser.parse(fileName, content)
+                val parsed = withContext(Dispatchers.Default) {
+                    SubtitleParser.parse(fileName, content)
+                }
 
                 if (parsed.segments.isEmpty()) {
                     _uiState.value = _uiState.value.copy(
@@ -108,6 +126,8 @@ class SubtitleViewModel(
                         infoMessage = "Loaded ${parsed.segments.size} subtitle entries (${parsed.format.displayName})."
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isParsing = false,
@@ -118,6 +138,7 @@ class SubtitleViewModel(
     }
 
     fun loadSampleSubtitle() {
+        if (_uiState.value.isTranslating || _uiState.value.isParsing) return
         val sampleSrt = """
             1
             00:00:01,000 --> 00:00:04,200
@@ -135,12 +156,15 @@ class SubtitleViewModel(
         val parsed = SubtitleParser.parse("sample_movie_subtitles.srt", sampleSrt)
         _uiState.value = _uiState.value.copy(
             subtitleFile = parsed,
+            progress = null,
+            exportedFilePath = null,
             errorMessage = null,
             infoMessage = "Loaded sample subtitle with 3 dialogue blocks."
         )
     }
 
     fun startTranslation() {
+        if (_uiState.value.isTranslating) return
         val file = _uiState.value.subtitleFile ?: run {
             _uiState.value = _uiState.value.copy(errorMessage = "Please select or load a subtitle file first.")
             return
@@ -149,41 +173,83 @@ class SubtitleViewModel(
         val provider = settingsRepository.getSelectedProvider()
         val apiKey = settingsRepository.getApiKeyForProvider(provider)
         if (apiKey.isBlank()) {
-            _uiState.value = _uiState.value.copy(
-                errorMessage = "API Key for ${provider.displayName} is missing. Configure it in Settings."
-            )
+            val message = if (provider == AiProvider.GEMINI && settingsRepository.getGeminiKeys().isNotEmpty()) {
+                "All Gemini keys have reached their app-managed daily request budget. Add another key or wait until tomorrow."
+            } else {
+                "API Key for ${provider.displayName} is missing. Configure it in Settings."
+            }
+            _uiState.value = _uiState.value.copy(errorMessage = message)
             return
         }
+
+        // Snapshot the selected options when the user taps Start. This guarantees that every
+        // batch in one run uses the same target language, even if the UI is recomposed while the
+        // network requests are in flight.
+        val selectedSourceLanguage = _uiState.value.sourceLanguage
+        val selectedTargetLanguage = _uiState.value.targetLanguage
+        val selectedTone = _uiState.value.tone
+        val selectedBatchSize = _uiState.value.batchSize
 
         _uiState.value = _uiState.value.copy(
             isTranslating = true,
             errorMessage = null,
-            exportedFilePath = null
+            infoMessage = null,
+            exportedFilePath = null,
+            progress = null
         )
 
         viewModelScope.launch {
-            engine.translateSubtitles(
-                subtitleFile = file,
-                sourceLanguage = _uiState.value.sourceLanguage,
-                targetLanguage = _uiState.value.targetLanguage,
-                tone = _uiState.value.tone,
-                batchSize = _uiState.value.batchSize
-            ).collect { progressState ->
+            try {
+                engine.translateSubtitles(
+                    subtitleFile = file,
+                    sourceLanguage = selectedSourceLanguage,
+                    targetLanguage = selectedTargetLanguage,
+                    tone = selectedTone,
+                    batchSize = selectedBatchSize
+                ).collect { progressState ->
+                    _uiState.value = _uiState.value.copy(
+                        progress = progressState,
+                        isTranslating = !progressState.isComplete,
+                        errorMessage = progressState.error ?: _uiState.value.errorMessage
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
-                    progress = progressState,
-                    isTranslating = !progressState.isComplete
+                    isTranslating = false,
+                    errorMessage = "Subtitle translation failed: ${e.localizedMessage ?: "Unknown error"}"
                 )
             }
         }
     }
 
     fun exportAndShare(context: Context, shouldShare: Boolean = false) {
-        val fileContent = _uiState.value.subtitleFile ?: return
+        val currentState = _uiState.value
+        val fileContent = currentState.subtitleFile ?: return
+        if (currentState.progress?.isComplete != true || currentState.progress?.error != null) {
+            _uiState.value = currentState.copy(
+                errorMessage = "Translate all subtitle segments successfully before exporting."
+            )
+            return
+        }
+
         viewModelScope.launch {
             try {
-                val serialized = SubtitleParser.serialize(fileContent)
-                val langCode = _uiState.value.targetLanguage.take(3).lowercase()
-                val originalName = fileContent.fileName.substringBeforeLast(".")
+                val serialized = withContext(Dispatchers.Default) {
+                    SubtitleParser.serialize(fileContent)
+                }
+                val langCode = _uiState.value.targetLanguage
+                    .lowercase()
+                    .replace(Regex("[^a-z0-9]+"), "_")
+                    .trim('_')
+                    .take(12)
+                    .ifBlank { "target" }
+                val originalName = fileContent.fileName
+                    .substringBeforeLast(".")
+                    .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                    .take(100)
+                    .ifBlank { "subtitle" }
                 val ext = fileContent.format.extension
                 val outFileName = "${originalName}_translated_$langCode.$ext"
 
@@ -205,6 +271,8 @@ class SubtitleViewModel(
                 if (shouldShare) {
                     shareFile(context, outFile)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     errorMessage = "Export failed: ${e.localizedMessage}"
@@ -231,6 +299,16 @@ class SubtitleViewModel(
                 errorMessage = "Unable to launch share dialog: ${e.localizedMessage}"
             )
         }
+    }
+
+    private fun clearPreviousTranslation() {
+        _uiState.value.subtitleFile?.segments?.forEach { it.translatedText = null }
+        _uiState.value = _uiState.value.copy(
+            progress = null,
+            errorMessage = null,
+            exportedFilePath = null,
+            infoMessage = null
+        )
     }
 
     fun clearError() {

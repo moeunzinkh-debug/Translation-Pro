@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import android.content.Context
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -42,7 +41,7 @@ fun TranscriptScreen(viewModel: TranscriptViewModel) {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text("Audio to text", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text("Create an accurate transcript from audio using your active Gemini key.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Create a speaker-separated transcript from audio using your active Gemini key.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         ElevatedCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(Icons.Default.AudioFile, null, tint = MaterialTheme.colorScheme.primary)
@@ -52,9 +51,12 @@ fun TranscriptScreen(viewModel: TranscriptViewModel) {
                 Button(
                     onClick = {
                         selected?.let { uri ->
-                            context.contentResolver.openInputStream(uri)?.use { input ->
-                                viewModel.transcribe(input.readBytes(), context.contentResolver.getType(uri) ?: "audio/mpeg", language.takeUnless { it == "Auto-detect" }.orEmpty())
-                            }
+                            viewModel.transcribeFromUri(
+                                context = context,
+                                uri = uri,
+                                mimeType = context.contentResolver.getType(uri) ?: "audio/mpeg",
+                                language = language.takeUnless { it == "Auto-detect" }.orEmpty()
+                            )
                         }
                     },
                     enabled = selected != null && !state.isWorking,
@@ -74,7 +76,37 @@ fun TranscriptScreen(viewModel: TranscriptViewModel) {
                         val clipboard = LocalClipboardManager.current
                         IconButton(onClick = { clipboard.setText(AnnotatedString(state.transcript)) }) { Icon(Icons.Default.ContentCopy, "Copy transcript") }
                     }
-                    Text(state.transcript)
+                    Text(
+                        "Speaker-separated chunks",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    if (state.chunks.isEmpty()) {
+                        Text(state.transcript)
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            state.chunks.forEach { chunk ->
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(Modifier.padding(12.dp)) {
+                                        Text(
+                                            chunk.speaker,
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(chunk.text)
+                                    }
+                                }
+                            }
+                        }
+                    }
                     HorizontalDivider()
                     Text("Export", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Box(Modifier.fillMaxWidth()) {
