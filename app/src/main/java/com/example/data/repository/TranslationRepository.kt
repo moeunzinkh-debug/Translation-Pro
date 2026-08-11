@@ -1,17 +1,16 @@
 package com.example.data.repository
 
-import com.example.data.api.ChatChoice
+import android.util.Base64
 import com.example.data.api.ChatCompletionRequest
 import com.example.data.api.ChatMessage
 import com.example.data.api.GeminiApiService
-import com.example.data.api.GeminiContent
-import com.example.data.api.GeminiGenerateContentRequest
-import com.example.data.api.GeminiGenerationConfig
-import com.example.data.api.GeminiInlineData
-import com.example.data.api.GeminiPart
-import android.util.Base64
+import com.example.data.api.GeminiErrorEnvelope
+import com.example.data.api.GeminiInteractionContent
+import com.example.data.api.GeminiInteractionGenerationConfig
+import com.example.data.api.GeminiInteractionRequest
 import com.example.data.api.OpenAiApiService
 import com.example.data.model.AiProvider
+import com.example.data.model.GeminiModel
 import com.example.data.model.TranslationRequest
 import com.example.data.model.TranslationResult
 import com.example.data.security.SecureSettingsRepository
@@ -238,61 +237,173 @@ class TranslationRepository(
         request: TranslationRequest,
         apiKey: String
     ): TranslationResult {
-        val model = settingsRepository.getGeminiModel()
-        val systemPrompt = buildSystemPrompt(request)
-        val userContent = buildUserContent(request)
-
-        val geminiReq = GeminiGenerateContentRequest(
-            contents = listOf(
-                GeminiContent(
-                    role = "user",
-                    parts = listOf(GeminiPart(userContent))
-                )
+        val model = normalizedGeminiModel(settingsRepository.getGeminiModel())
+        val interactionRequest = GeminiInteractionRequest(
+            model = model,
+            input = listOf(
+                GeminiInteractionContent(type = "text", text = buildUserContent(request))
             ),
-            systemInstruction = GeminiContent(
-                parts = listOf(GeminiPart(systemPrompt))
-            ),
-            generationConfig = GeminiGenerationConfig(
+            systemInstruction = buildSystemPrompt(request),
+            generationConfig = GeminiInteractionGenerationConfig(
                 temperature = temperatureFor(request)
-            )
+            ),
+            // Translation requests do not need server-side conversation storage.
+            store = false
         )
 
-        val response = geminiApiService.generateContent(
-            model = model,
+        val response = geminiApiService.createInteraction(
             apiKey = apiKey,
-            request = geminiReq
+            request = interactionRequest
         )
 
         if (!response.isSuccessful) {
-            val errBody = response.errorBody()?.string() ?: ""
-            throw IOException("Gemini API error (${response.code()}): $errBody")
+            throw geminiApiException(
+                code = response.code(),
+                errorBody = response.errorBody()?.string().orEmpty(),
+                model = model
+            )
         }
 
-        val rawText = response.body()?.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
-            ?: throw IOException("Empty response from Gemini API")
+        val rawText = response.body()?.steps
+            .orEmpty()
+            .asSequence()
+            .filter { it.type == "model_output" }
+            .flatMap { it.content.asSequence() }
+            .filter { it.type == "text" }
+            .mapNotNull { it.text }
+            .joinToString(separator = "")
+            .takeIf { it.isNotBlank() }
+            ?: throw IOException("Gemini returned an empty translation.")
 
         settingsRepository.recordGeminiRequest()
         return parseTranslationOutput(rawText, request, AiProvider.GEMINI)
     }
 
-    /** Sends an audio clip to Gemini's multimodal generateContent endpoint and returns plain transcript text. */
+    /**
+     * Loads every model page from Google's live Models API and returns all models that advertise
+     * generateContent support. This avoids a hard-coded list becoming stale when Google changes
+     * model availability.
+     */
+    suspend fun listGeminiModels(): Result<List<GeminiModel>> = try {
+        val apiKey = settingsRepository.getGeminiApiKey()
+        if (apiKey.isBlank()) {
+            throw IllegalArgumentException("Add or select a Gemini API key before loading models.")
+        }
+
+        val allModels = mutableListOf<GeminiModel>()
+        val seenPageTokens = mutableSetOf<String>()
+        var pageToken: String? = null
+
+        do {
+            val response = geminiApiService.listModels(
+                apiKey = apiKey,
+                pageSize = 1000,
+                pageToken = pageToken
+            )
+            if (!response.isSuccessful) {
+                throw geminiApiException(
+                    code = response.code(),
+                    errorBody = response.errorBody()?.string().orEmpty()
+                )
+            }
+
+            val body = response.body()
+                ?: throw IOException("Gemini returned an empty model list.")
+
+            allModels += body.models
+                .filter { model ->
+                    model.supportedGenerationMethods.any {
+                        it.equals("generateContent", ignoreCase = true)
+                    }
+                }
+                .map { model ->
+                    val id = normalizedGeminiModel(model.name)
+                    GeminiModel(
+                        id = id,
+                        displayName = model.displayName?.takeIf { it.isNotBlank() } ?: id,
+                        description = model.description.orEmpty(),
+                        inputTokenLimit = model.inputTokenLimit,
+                        outputTokenLimit = model.outputTokenLimit,
+                        supportedGenerationMethods = model.supportedGenerationMethods
+                    )
+                }
+
+            val nextToken = body.nextPageToken?.takeIf { it.isNotBlank() }
+            pageToken = if (nextToken != null && seenPageTokens.add(nextToken)) nextToken else null
+        } while (pageToken != null)
+
+        val preferredOrder = listOf(
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite"
+        )
+        val models = allModels
+            .distinctBy { it.id }
+            .sortedWith(
+                compareBy<GeminiModel> {
+                    preferredOrder.indexOf(it.id).let { index ->
+                        if (index == -1) Int.MAX_VALUE else index
+                    }
+                }.thenBy { it.displayName.lowercase() }
+                    .thenBy { it.id }
+            )
+
+        if (models.isEmpty()) {
+            throw IOException("No Gemini text-generation models are available for this API key.")
+        }
+        Result.success(models)
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+    /** Sends an audio clip to Gemini's multimodal Interactions API and returns plain transcript text. */
     suspend fun transcribe(audio: ByteArray, mimeType: String, languageHint: String): Result<String> = try {
         val apiKey = settingsRepository.getGeminiApiKey()
         if (apiKey.isBlank()) throw IllegalArgumentException("Add a Gemini API key in Settings first.")
-        val request = GeminiGenerateContentRequest(
-            contents = listOf(GeminiContent(parts = listOf(
-                GeminiPart(text = "Transcribe this audio accurately${if (languageHint.isBlank()) "" else " in $languageHint"}. Return only the transcript, with natural paragraph breaks.") ,
-                GeminiPart(inlineData = GeminiInlineData(mimeType, Base64.encodeToString(audio, Base64.NO_WRAP)))
-            ))),
-            generationConfig = GeminiGenerationConfig(temperature = 0.1)
+
+        val model = normalizedGeminiModel(settingsRepository.getGeminiModel())
+        val prompt = "Transcribe this audio accurately${if (languageHint.isBlank()) "" else " in $languageHint"}. Return only the transcript, with natural paragraph breaks."
+        val request = GeminiInteractionRequest(
+            model = model,
+            input = listOf(
+                GeminiInteractionContent(
+                    type = "audio",
+                    mimeType = mimeType,
+                    data = Base64.encodeToString(audio, Base64.NO_WRAP)
+                ),
+                GeminiInteractionContent(type = "text", text = prompt)
+            ),
+            generationConfig = GeminiInteractionGenerationConfig(temperature = 0.1),
+            store = false
         )
-        val response = geminiApiService.generateContent(settingsRepository.getGeminiModel(), apiKey, request)
-        if (!response.isSuccessful) throw IOException("Gemini API error (${response.code()}): ${response.errorBody()?.string().orEmpty()}")
-        val text = response.body()?.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+
+        val response = geminiApiService.createInteraction(apiKey, request)
+        if (!response.isSuccessful) {
+            throw geminiApiException(
+                code = response.code(),
+                errorBody = response.errorBody()?.string().orEmpty(),
+                model = model
+            )
+        }
+
+        val text = response.body()?.steps
+            .orEmpty()
+            .asSequence()
+            .filter { it.type == "model_output" }
+            .flatMap { it.content.asSequence() }
+            .filter { it.type == "text" }
+            .mapNotNull { it.text }
+            .joinToString(separator = "")
+            .trim()
+            .takeIf { it.isNotBlank() }
             ?: throw IOException("Gemini returned an empty transcript.")
+
         settingsRepository.recordGeminiRequest()
-        Result.success(text.trim())
-    } catch (e: Exception) { Result.failure(e) }
+        Result.success(text)
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
 
     private fun buildSystemPrompt(request: TranslationRequest): String {
         if (request.isSubtitle) {
@@ -378,6 +489,38 @@ class TranslationRepository(
             slangNotes = slangNotes,
             providerUsed = provider
         )
+    }
+
+    private fun normalizedGeminiModel(model: String): String {
+        return model.trim().removePrefix("models/")
+    }
+
+    private fun geminiApiException(
+        code: Int,
+        errorBody: String,
+        model: String? = null
+    ): IOException {
+        val apiMessage = try {
+            moshi.adapter(GeminiErrorEnvelope::class.java)
+                .fromJson(errorBody)
+                ?.error
+                ?.message
+                ?.trim()
+        } catch (_: Exception) {
+            null
+        }
+
+        if (code == 404 && apiMessage?.contains("no longer available", ignoreCase = true) == true) {
+            return IOException(
+                "Gemini model “${model.orEmpty()}” is not available for this API key. " +
+                    "Refresh the model list and choose a current Gemini 3 model, such as gemini-3.6-flash."
+            )
+        }
+
+        val detail = apiMessage?.takeIf { it.isNotBlank() }
+            ?: errorBody.take(500).takeIf { it.isNotBlank() }
+            ?: "Request failed."
+        return IOException("Gemini API error ($code): $detail")
     }
 
     private fun isRetryableServerError(e: Exception): Boolean {
