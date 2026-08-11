@@ -3,20 +3,37 @@ package com.example.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.repository.TranslationRepository
+import com.example.data.transcript.TranscriptChunk
+import com.example.data.transcript.TranscriptFormatter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-data class TranscriptUiState(val isWorking: Boolean = false, val transcript: String = "", val error: String? = null)
+data class TranscriptUiState(
+    val isWorking: Boolean = false,
+    val transcript: String = "",
+    val chunks: List<TranscriptChunk> = emptyList(),
+    val error: String? = null
+)
 class TranscriptViewModel(private val repository: TranslationRepository) : ViewModel() {
     private val _uiState = MutableStateFlow(TranscriptUiState())
     val uiState: StateFlow<TranscriptUiState> = _uiState.asStateFlow()
     fun transcribe(audio: ByteArray, mimeType: String, language: String) = viewModelScope.launch {
         _uiState.value = _uiState.value.copy(isWorking = true, error = null)
         repository.transcribe(audio, mimeType, language).fold(
-            onSuccess = { _uiState.value = TranscriptUiState(transcript = it) },
-            onFailure = { _uiState.value = TranscriptUiState(error = it.localizedMessage ?: "Transcription failed.") }
+            onSuccess = { rawTranscript ->
+                val chunks = TranscriptFormatter.parse(rawTranscript)
+                _uiState.value = TranscriptUiState(
+                    transcript = TranscriptFormatter.format(chunks),
+                    chunks = chunks
+                )
+            },
+            onFailure = {
+                _uiState.value = TranscriptUiState(
+                    error = it.localizedMessage ?: "Transcription failed."
+                )
+            }
         )
     }
 }

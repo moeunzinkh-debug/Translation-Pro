@@ -357,13 +357,29 @@ class TranslationRepository(
         Result.failure(e)
     }
 
-    /** Sends an audio clip to Gemini's multimodal Interactions API and returns plain transcript text. */
+    /** Sends an audio clip to Gemini and returns a speaker-labelled transcript. */
     suspend fun transcribe(audio: ByteArray, mimeType: String, languageHint: String): Result<String> = try {
         val apiKey = settingsRepository.getGeminiApiKey()
         if (apiKey.isBlank()) throw IllegalArgumentException("Add a Gemini API key in Settings first.")
 
         val model = normalizedGeminiModel(settingsRepository.getGeminiModel())
-        val prompt = "Transcribe this audio accurately${if (languageHint.isBlank()) "" else " in $languageHint"}. Return only the transcript, with natural paragraph breaks."
+        val speakerInstruction = """
+            You are an accurate audio transcription and speaker-diarization assistant.
+            Transcribe the spoken words exactly and separate the transcript by voice.
+            Use stable labels such as Speaker 1, Speaker 2, Speaker 3 for distinct voices.
+            Start a new chunk whenever the active speaker changes, even if the change happens
+            in the middle of a sentence. Keep consecutive speech from the same speaker in one
+            chunk. If a speaker returns later, reuse the same speaker number.
+            Do not guess names or identities. Do not merge two different speakers into one chunk.
+            Return only the transcript in this exact format, with a blank line between chunks:
+            [Speaker 1]
+            spoken words from the first voice
+
+            [Speaker 2]
+            spoken words from the second voice
+            Do not include timestamps, explanations, sound descriptions, or a summary.
+        """.trimIndent()
+        val prompt = "Transcribe this audio accurately${if (languageHint.isBlank()) "" else " in $languageHint"}. Apply the speaker-chunk format from the instructions."
         val request = GeminiInteractionRequest(
             model = model,
             input = listOf(
@@ -374,6 +390,7 @@ class TranslationRepository(
                 ),
                 GeminiInteractionContent(type = "text", text = prompt)
             ),
+            systemInstruction = speakerInstruction,
             generationConfig = GeminiInteractionGenerationConfig(temperature = 0.1),
             store = false
         )
