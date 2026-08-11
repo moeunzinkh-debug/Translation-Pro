@@ -28,6 +28,7 @@ fun TranscriptScreen(viewModel: TranscriptViewModel) {
     var selected by remember { mutableStateOf<Uri?>(null) }
     var language by remember { mutableStateOf("Auto-detect") }
     var pendingExport by remember { mutableStateOf<String?>(null) }
+    var exportMenuExpanded by remember { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { selected = it }
     val exportDocument = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
         uri?.let { target ->
@@ -76,15 +77,22 @@ fun TranscriptScreen(viewModel: TranscriptViewModel) {
                     Text(state.transcript)
                     HorizontalDivider()
                     Text("Export", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedButton(
-                            onClick = { pendingExport = state.transcript; exportDocument.launch("transcript.txt") },
-                            modifier = Modifier.weight(1f)
-                        ) { Icon(Icons.Default.Download, null); Spacer(Modifier.width(6.dp)); Text("Export TXT") }
-                        Button(
-                            onClick = { pendingExport = transcriptToSrt(state.transcript); exportDocument.launch("transcript.srt") },
-                            modifier = Modifier.weight(1f)
-                        ) { Icon(Icons.Default.Download, null); Spacer(Modifier.width(6.dp)); Text("Export SRT") }
+                    Box(Modifier.fillMaxWidth()) {
+                        Button(onClick = { exportMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.Download, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Export")
+                        }
+                        DropdownMenu(expanded = exportMenuExpanded, onDismissRequest = { exportMenuExpanded = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Text file (.txt)") },
+                                onClick = { exportMenuExpanded = false; pendingExport = state.transcript; exportDocument.launch("transcript.txt") }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Subtitle file (.srt)") },
+                                onClick = { exportMenuExpanded = false; pendingExport = transcriptToSrt(state.transcript); exportDocument.launch("transcript.srt") }
+                            )
+                        }
                     }
                     Text("SRT timing is estimated from transcript paragraphs. For frame-accurate subtitles, use an audio service that returns timestamps.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
