@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 
 data class TranscriptUiState(
@@ -52,7 +53,23 @@ class TranscriptViewModel(private val repository: TranslationRepository) : ViewM
         _uiState.value = TranscriptUiState(isWorking = true)
         try {
             val audio = withContext(Dispatchers.IO) {
-                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(8 * 1024)
+                    var totalBytes = 0
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count == -1) break
+                        if (totalBytes > TranslationRepository.MAX_INLINE_AUDIO_BYTES - count) {
+                            throw IOException(
+                                "Audio file is too large for inline transcription. Please choose a file smaller than 14 MB."
+                            )
+                        }
+                        output.write(buffer, 0, count)
+                        totalBytes += count
+                    }
+                    output.toByteArray()
+                }
             } ?: throw IOException("Unable to read the selected audio file.")
 
             runTranscription(audio, mimeType, language)

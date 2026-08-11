@@ -37,7 +37,7 @@ class TranslationRepository(
     companion object {
         // Base64 expands the payload by about one third. Keep the raw file below this limit so
         // the complete inline Interactions request stays under Google's 20 MB request limit.
-        private const val MAX_INLINE_AUDIO_BYTES = 14 * 1024 * 1024
+        const val MAX_INLINE_AUDIO_BYTES = 14 * 1024 * 1024
     }
 
     private val moshi = Moshi.Builder()
