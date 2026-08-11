@@ -54,10 +54,12 @@ class SubtitleViewModel(
 
     fun onSourceLanguageSelected(lang: String) {
         _uiState.value = _uiState.value.copy(sourceLanguage = lang)
+        settingsRepository.setDefaultSourceLanguage(lang)
     }
 
     fun onTargetLanguageSelected(lang: String) {
         _uiState.value = _uiState.value.copy(targetLanguage = lang)
+        settingsRepository.setDefaultTargetLanguage(lang)
     }
 
     fun onToneSelected(tone: TranslationTone) {
@@ -155,23 +157,40 @@ class SubtitleViewModel(
             return
         }
 
+        // Snapshot the selected options when the user taps Start. This guarantees that every
+        // batch in one run uses the same target language, even if the UI is recomposed while the
+        // network requests are in flight.
+        val selectedSourceLanguage = _uiState.value.sourceLanguage
+        val selectedTargetLanguage = _uiState.value.targetLanguage
+        val selectedTone = _uiState.value.tone
+        val selectedBatchSize = _uiState.value.batchSize
+
         _uiState.value = _uiState.value.copy(
             isTranslating = true,
             errorMessage = null,
+            infoMessage = null,
             exportedFilePath = null
         )
 
         viewModelScope.launch {
-            engine.translateSubtitles(
-                subtitleFile = file,
-                sourceLanguage = _uiState.value.sourceLanguage,
-                targetLanguage = _uiState.value.targetLanguage,
-                tone = _uiState.value.tone,
-                batchSize = _uiState.value.batchSize
-            ).collect { progressState ->
+            try {
+                engine.translateSubtitles(
+                    subtitleFile = file,
+                    sourceLanguage = selectedSourceLanguage,
+                    targetLanguage = selectedTargetLanguage,
+                    tone = selectedTone,
+                    batchSize = selectedBatchSize
+                ).collect { progressState ->
+                    _uiState.value = _uiState.value.copy(
+                        progress = progressState,
+                        isTranslating = !progressState.isComplete,
+                        errorMessage = progressState.error ?: _uiState.value.errorMessage
+                    )
+                }
+            } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
-                    progress = progressState,
-                    isTranslating = !progressState.isComplete
+                    isTranslating = false,
+                    errorMessage = "Subtitle translation failed: ${e.localizedMessage ?: "Unknown error"}"
                 )
             }
         }

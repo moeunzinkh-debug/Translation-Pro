@@ -107,7 +107,7 @@ class TranslationRepository(
             sourceLanguage = "English",
             targetLanguage = "Spanish",
             text = "Hello world",
-            isSubtitle = true
+            isSubtitle = false
         )
 
         return try {
@@ -410,12 +410,18 @@ class TranslationRepository(
             return """
             You are a professional media subtitle translator.
             Task:
-            1. Translate dialogue segments accurately into ${request.targetLanguage}.
-            2. Source Language: ${request.sourceLanguage}.
-            3. Respect slang, idioms, and cultural context. Translate meaning, not literal words.
-            4. Tone instruction: ${request.tone.promptInstruction}.
-            5. Keep proper nouns and named entities consistent.
-            6. STRICT SUBTITLE CONSTRAINT: Output ONLY the translated dialogue text. Do NOT include line numbers, timestamps, explanatory notes, or intro/outro conversational fluff.
+            1. Translate every dialogue segment accurately into ${request.targetLanguage}.
+            2. Source language: ${request.sourceLanguage}.
+            3. Target language (must use): ${request.targetLanguage}. Do not return the source language unchanged unless a word is a proper noun or has no natural translation.
+            4. Respect slang, idioms, and cultural context. Translate meaning, not literal words.
+            5. Tone instruction: ${request.tone.promptInstruction}.
+            6. Keep proper nouns and named entities consistent.
+            STRICT BATCH OUTPUT FORMAT:
+            - Each input line is formatted as [ID] dialogue text.
+            - Return exactly one line for every input line, in the same order.
+            - Copy every numeric [ID] tag exactly; never translate, remove, renumber, or reorder it.
+            - Translate only the dialogue after each tag into ${request.targetLanguage}.
+            - Keep each translated dialogue on one line. Do not include timestamps, explanations, notes, markdown fences, or introductory/concluding text.
             """.trimIndent()
         }
 
