@@ -176,6 +176,7 @@ class SettingsViewModel(
         viewModelScope.launch {
             val result = translationRepository.listGeminiModels()
             if (generation != modelLoadGeneration) return@launch
+            loadSettings()
 
             _uiState.value = if (result.isSuccess) {
                 _uiState.value.copy(
@@ -231,6 +232,7 @@ class SettingsViewModel(
 
         viewModelScope.launch {
             val result = translationRepository.testConnection(provider)
+            if (provider == AiProvider.GEMINI) loadSettings()
             if (result.isSuccess) {
                 _uiState.value = _uiState.value.copy(
                     isTestingConnection = false,

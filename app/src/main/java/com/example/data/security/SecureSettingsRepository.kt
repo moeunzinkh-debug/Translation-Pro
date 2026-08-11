@@ -136,13 +136,40 @@ class SecureSettingsRepository(private val context: Context) {
         val active = getActiveGeminiKey() ?: return
         saveGeminiKeys(getGeminiKeys().map { if (it.id == active.id) it.copy(usedToday = it.usedToday + 1) else it })
     }
+
+    /**
+     * Marks one key unavailable for the rest of today and selects the next key with remaining
+     * budget. This is used for real provider quota/rate-limit responses, not to bypass quotas.
+     */
+    fun markGeminiKeyExhausted(id: String): GeminiKey? {
+        val keys = getGeminiKeys()
+        if (keys.none { it.id == id }) return null
+
+        val updated = keys.map { key ->
+            if (key.id == id) key.copy(usedToday = key.dailyLimit) else key
+        }
+        saveGeminiKeys(updated)
+
+        val next = updated.firstOrNull { it.remainingToday > 0 }
+        if (next == null) {
+            prefs.edit().remove(KEY_GEMINI_ACTIVE_KEY).apply()
+        } else {
+            prefs.edit().putString(KEY_GEMINI_ACTIVE_KEY, next.id).apply()
+        }
+        return next
+    }
+
     fun getActiveGeminiKey(): GeminiKey? {
         val keys = getGeminiKeys()
             .filter { it.remainingToday > 0 }
         if (keys.isEmpty()) return null
 
         val requested = prefs.getString(KEY_GEMINI_ACTIVE_KEY, "")
-        return keys.firstOrNull { it.id == requested } ?: keys.first()
+        val selected = keys.firstOrNull { it.id == requested } ?: keys.first()
+        if (requested != selected.id) {
+            prefs.edit().putString(KEY_GEMINI_ACTIVE_KEY, selected.id).apply()
+        }
+        return selected
     }
     private fun saveGeminiKeys(keys: List<GeminiKey>) {
         prefs.edit().putString(KEY_GEMINI_KEYS, keys.joinToString("\n") { "${it.id}|${it.label.replace("|", " ")}|${it.value}|${it.dailyLimit}|${it.usedToday}|${it.day}" }).apply()

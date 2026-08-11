@@ -45,6 +45,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,6 +65,7 @@ import com.example.ui.viewmodel.SettingsViewModel
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel) {
     val state by viewModel.uiState.collectAsState()
+    LaunchedEffect(Unit) { viewModel.loadSettings() }
     val scrollState = rememberScrollState()
 
     var providerDropdownExpanded by remember { mutableStateOf(false) }
@@ -262,6 +264,11 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
                             "Add as many keys as needed. Remaining requests are based on your app-managed daily limit; Google does not expose live project quota through an API key.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            "When Gemini returns a quota or rate-limit response, the app marks that key unavailable for today and automatically switches to the next available key.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
                         )
 
                         Spacer(Modifier.height(10.dp))

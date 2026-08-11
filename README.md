@@ -26,6 +26,7 @@
 3. **Gemini Key Pool & Daily Budget**
    - Add and remove an unlimited number of encrypted Gemini API keys.
    - Select an active key and see its app-managed daily request budget and remaining requests.
+   - When Gemini returns a quota or rate-limit response, the exhausted key is marked unavailable for the day and the app automatically fails over to the next available key.
    - Gemini does not provide a remaining project quota endpoint for API keys; the displayed amount is the transparent local request budget configured for that key.
 
 4. **Gemini Audio Transcript**

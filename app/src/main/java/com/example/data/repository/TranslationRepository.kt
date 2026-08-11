@@ -79,9 +79,35 @@ class TranslationRepository(
     }
 
     override suspend fun translate(request: TranslationRequest): Result<TranslationResult> {
-        val provider = settingsRepository.getSelectedProvider()
-        val apiKey = settingsRepository.getApiKeyForProvider(provider)
+        return translateWithProvider(request, settingsRepository.getSelectedProvider())
+    }
 
+    override suspend fun testConnection(provider: AiProvider): Result<String> {
+        val testRequest = TranslationRequest(
+            sourceLanguage = "English",
+            targetLanguage = "Spanish",
+            text = "Hello world",
+            isSubtitle = false
+        )
+
+        return translateWithProvider(testRequest, provider).fold(
+            onSuccess = { result ->
+                Result.success("Connection successful! Response: \"${result.translatedText.trim()}\"")
+            },
+            onFailure = { Result.failure(it) }
+        )
+    }
+
+    /**
+     * Executes a provider request and rotates through the user's stored Gemini keys when Google
+     * reports a quota or rate-limit response. A key is marked exhausted for today before moving to
+     * the next key; this is failover, not a quota bypass.
+     */
+    private suspend fun translateWithProvider(
+        request: TranslationRequest,
+        provider: AiProvider
+    ): Result<TranslationResult> {
+        var apiKey = settingsRepository.getApiKeyForProvider(provider)
         if (apiKey.isBlank()) {
             val message = if (provider == AiProvider.GEMINI && settingsRepository.getGeminiKeys().isNotEmpty()) {
                 "All Gemini keys have reached their app-managed daily request budget. Add another key or wait until tomorrow."
@@ -91,11 +117,20 @@ class TranslationRepository(
             return Result.failure(IllegalArgumentException(message))
         }
 
-        // Network call with 1 automatic retry on failure
+        var activeGeminiKeyId = if (provider == AiProvider.GEMINI) {
+            settingsRepository.getActiveGeminiKey()?.id
+        } else {
+            null
+        }
+        val maxAttempts = if (provider == AiProvider.GEMINI) {
+            maxOf(2, settingsRepository.getGeminiKeys().size)
+        } else {
+            2
+        }
+
         var attempts = 0
         var lastException: Throwable? = null
-
-        while (attempts < 2) {
+        while (attempts < maxAttempts) {
             attempts++
             try {
                 val result = when (provider) {
@@ -109,8 +144,21 @@ class TranslationRepository(
                 throw e
             } catch (e: Exception) {
                 lastException = e
-                if (attempts < 2 && (e is IOException || isRetryableServerError(e))) {
-                    delay(1000) // 1 second backoff before retry
+
+                if (provider == AiProvider.GEMINI && isGeminiQuotaOrRateLimitError(e)) {
+                    val currentKeyId = activeGeminiKeyId
+                    if (currentKeyId != null) {
+                        val nextKey = settingsRepository.markGeminiKeyExhausted(currentKeyId)
+                        if (nextKey != null) {
+                            apiKey = nextKey.value
+                            activeGeminiKeyId = nextKey.id
+                            continue
+                        }
+                    }
+                }
+
+                if (attempts < maxAttempts && (e is IOException || isRetryableServerError(e))) {
+                    delay(1000)
                 } else {
                     break
                 }
@@ -120,37 +168,54 @@ class TranslationRepository(
         return Result.failure(lastException ?: Exception("Translation failed after retries."))
     }
 
-    override suspend fun testConnection(provider: AiProvider): Result<String> {
-        val apiKey = settingsRepository.getApiKeyForProvider(provider)
+    /** Runs a Gemini operation and rotates to the next stored key on a quota/rate-limit response. */
+    private suspend fun <T> withGeminiKeyFailover(
+        operation: suspend (apiKey: String) -> T
+    ): T {
+        var apiKey = settingsRepository.getGeminiApiKey()
         if (apiKey.isBlank()) {
-            val message = if (provider == AiProvider.GEMINI && settingsRepository.getGeminiKeys().isNotEmpty()) {
-                "All Gemini keys have reached their app-managed daily request budget."
+            val message = if (settingsRepository.getGeminiKeys().isNotEmpty()) {
+                "All Gemini keys have reached their app-managed daily request budget. Add another key or wait until tomorrow."
             } else {
-                "API Key is empty."
+                "Add a Gemini API key in Settings first."
             }
-            return Result.failure(IllegalArgumentException(message))
+            throw IllegalArgumentException(message)
         }
 
-        val testRequest = TranslationRequest(
-            sourceLanguage = "English",
-            targetLanguage = "Spanish",
-            text = "Hello world",
-            isSubtitle = false
-        )
+        var activeKeyId = settingsRepository.getActiveGeminiKey()?.id
+        val maxAttempts = maxOf(2, settingsRepository.getGeminiKeys().size)
+        var attempts = 0
+        var lastException: Exception? = null
 
-        return try {
-            val result = when (provider) {
-                AiProvider.SEA_LION -> translateViaSeaLion(testRequest, apiKey)
-                AiProvider.GEMINI -> translateViaGemini(testRequest, apiKey)
-                AiProvider.CHATGPT -> translateViaChatGPT(testRequest, apiKey)
-                AiProvider.CUSTOM -> translateViaCustom(testRequest, apiKey)
+        while (attempts < maxAttempts) {
+            attempts++
+            try {
+                return operation(apiKey)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastException = e
+                if (isGeminiQuotaOrRateLimitError(e)) {
+                    val currentKeyId = activeKeyId
+                    if (currentKeyId != null) {
+                        val nextKey = settingsRepository.markGeminiKeyExhausted(currentKeyId)
+                        if (nextKey != null) {
+                            apiKey = nextKey.value
+                            activeKeyId = nextKey.id
+                            continue
+                        }
+                    }
+                }
+
+                if (attempts < maxAttempts && (e is IOException || isRetryableServerError(e))) {
+                    delay(1000)
+                } else {
+                    break
+                }
             }
-            Result.success("Connection successful! Response: \"${result.translatedText.trim()}\"")
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
         }
+
+        throw lastException ?: IOException("Gemini request failed after trying the available keys.")
     }
 
     private suspend fun translateViaSeaLion(
@@ -315,16 +380,14 @@ class TranslationRepository(
      * model availability.
      */
     suspend fun listGeminiModels(): Result<List<GeminiModel>> = try {
-        val apiKey = settingsRepository.getGeminiApiKey()
-        if (apiKey.isBlank()) {
-            val message = if (settingsRepository.getGeminiKeys().isNotEmpty()) {
-                "All Gemini keys have reached their app-managed daily request budget."
-            } else {
-                "Add or select a Gemini API key before loading models."
-            }
-            throw IllegalArgumentException(message)
-        }
+        Result.success(withGeminiKeyFailover { apiKey -> fetchGeminiModels(apiKey) })
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
 
+    private suspend fun fetchGeminiModels(apiKey: String): List<GeminiModel> {
         val allModels = mutableListOf<GeminiModel>()
         val seenPageTokens = mutableSetOf<String>()
         var pageToken: String? = null
@@ -387,24 +450,11 @@ class TranslationRepository(
         if (models.isEmpty()) {
             throw IOException("No Gemini text-generation models are available for this API key.")
         }
-        Result.success(models)
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        Result.failure(e)
+        return models
     }
 
     /** Sends an audio clip to Gemini and returns a speaker-labelled transcript. */
     suspend fun transcribe(audio: ByteArray, mimeType: String, languageHint: String): Result<String> = try {
-        val apiKey = settingsRepository.getGeminiApiKey()
-        if (apiKey.isBlank()) {
-            val message = if (settingsRepository.getGeminiKeys().isNotEmpty()) {
-                "All Gemini keys have reached their app-managed daily request budget."
-            } else {
-                "Add a Gemini API key in Settings first."
-            }
-            throw IllegalArgumentException(message)
-        }
         if (audio.isEmpty()) throw IllegalArgumentException("The selected audio file is empty.")
         if (audio.size > MAX_INLINE_AUDIO_BYTES) {
             throw IllegalArgumentException(
@@ -448,42 +498,44 @@ class TranslationRepository(
             store = false
         )
 
-        val response = geminiApiService.createInteraction(apiKey, request)
-        if (!response.isSuccessful) {
-            throw geminiApiException(
-                code = response.code(),
-                errorBody = response.errorBody()?.string().orEmpty(),
-                model = model
-            )
-        }
-
-        val responseSteps = response.body()?.steps.orEmpty()
-        val outputContents = responseSteps
-            .asSequence()
-            .filter {
-                it.type.equals("model_output", ignoreCase = true) ||
-                    it.type.equals("transcription", ignoreCase = true)
+        val text = withGeminiKeyFailover { apiKey ->
+            val response = geminiApiService.createInteraction(apiKey, request)
+            if (!response.isSuccessful) {
+                throw geminiApiException(
+                    code = response.code(),
+                    errorBody = response.errorBody()?.string().orEmpty(),
+                    model = model
+                )
             }
-            .flatMap { it.content.asSequence() }
-            .toList()
-        val wordInfoContents = responseSteps
-            .asSequence()
-            .flatMap { it.content.asSequence() }
-            .filter { it.type.equals("word_info", ignoreCase = true) }
-            .toList()
 
-        // Newer Interactions API responses can return word_info blocks with a speaker
-        // attribution. Prefer those because they are produced by the ASR diarization pipeline.
-        // The prompt-labelled text fallback keeps this compatible with older model responses.
-        val text = formatWordInfoTranscript(wordInfoContents)
-            ?: outputContents
+            val responseSteps = response.body()?.steps.orEmpty()
+            val outputContents = responseSteps
                 .asSequence()
-                .filter { it.type.equals("text", ignoreCase = true) }
-                .mapNotNull { it.text }
-                .joinToString(separator = "")
-                .trim()
-                .takeIf { it.isNotBlank() }
-            ?: throw IOException("Gemini returned an empty transcript.")
+                .filter {
+                    it.type.equals("model_output", ignoreCase = true) ||
+                        it.type.equals("transcription", ignoreCase = true)
+                }
+                .flatMap { it.content.asSequence() }
+                .toList()
+            val wordInfoContents = responseSteps
+                .asSequence()
+                .flatMap { it.content.asSequence() }
+                .filter { it.type.equals("word_info", ignoreCase = true) }
+                .toList()
+
+            // Newer Interactions API responses can return word_info blocks with a speaker
+            // attribution. Prefer those because they are produced by the ASR diarization pipeline.
+            // The prompt-labelled text fallback keeps this compatible with older model responses.
+            formatWordInfoTranscript(wordInfoContents)
+                ?: outputContents
+                    .asSequence()
+                    .filter { it.type.equals("text", ignoreCase = true) }
+                    .mapNotNull { it.text }
+                    .joinToString(separator = "")
+                    .trim()
+                    .takeIf { it.isNotBlank() }
+                ?: throw IOException("Gemini returned an empty transcript.")
+        }
 
         settingsRepository.recordGeminiRequest()
         Result.success(text)
@@ -683,6 +735,17 @@ class TranslationRepository(
             ?: errorBody.take(500).takeIf { it.isNotBlank() }
             ?: "Request failed."
         return IOException("Gemini API error ($code): $detail")
+    }
+
+    private fun isGeminiQuotaOrRateLimitError(e: Exception): Boolean {
+        val message = e.message.orEmpty().lowercase()
+        return message.contains("429") ||
+            message.contains("resource_exhausted") ||
+            message.contains("rate limit") ||
+            message.contains("rate_limit") ||
+            message.contains("too many requests") ||
+            message.contains("quota exceeded") ||
+            message.contains("exceeded your current quota")
     }
 
     private fun isRetryableServerError(e: Exception): Boolean {
