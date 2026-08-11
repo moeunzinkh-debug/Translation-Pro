@@ -1,10 +1,8 @@
 package com.example.ui.screens
 
-import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,11 +20,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.NetworkCheck
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
@@ -52,7 +52,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -66,9 +65,9 @@ import com.example.ui.viewmodel.SettingsViewModel
 fun SettingsScreen(viewModel: SettingsViewModel) {
     val state by viewModel.uiState.collectAsState()
     val scrollState = rememberScrollState()
-    val context = LocalContext.current
 
     var providerDropdownExpanded by remember { mutableStateOf(false) }
+    var geminiModelDropdownExpanded by remember { mutableStateOf(false) }
     var keyVisible by remember { mutableStateOf(false) }
     var newGeminiKey by remember { mutableStateOf("") }
     var newGeminiLabel by remember { mutableStateOf("") }
@@ -254,22 +253,265 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
                     }
 
                     AiProvider.GEMINI -> {
-                        Text("Gemini key pool", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text("Add as many keys as needed. Remaining requests are based on your app-managed daily limit; Google does not expose live project quota through an API key.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            "Gemini key pool",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "Add as many keys as needed. Remaining requests are based on your app-managed daily limit; Google does not expose live project quota through an API key.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Spacer(Modifier.height(10.dp))
+
                         state.geminiKeys.forEach { key ->
-                            Surface(shape = RoundedCornerShape(12.dp), color = if (key.value == state.geminiApiKey) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth().clickable { viewModel.selectGeminiKey(key.id) }) {
-                                Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Column(Modifier.weight(1f)) { Text(key.label, fontWeight = FontWeight.SemiBold); Text("${key.maskedValue} · ${key.remainingToday} / ${key.dailyLimit} requests left today", style = MaterialTheme.typography.bodySmall) }
-                                    TextButton(onClick = { viewModel.removeGeminiKey(key.id) }) { Text("Remove") }
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (key.value == state.geminiApiKey) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { viewModel.selectGeminiKey(key.id) }
+                            ) {
+                                Row(
+                                    Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(key.label, fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            "${key.maskedValue} · ${key.remainingToday} / ${key.dailyLimit} requests left today",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                    TextButton(onClick = { viewModel.removeGeminiKey(key.id) }) {
+                                        Text("Remove")
+                                    }
                                 }
                             }
                             Spacer(Modifier.height(6.dp))
                         }
-                        OutlinedTextField(newGeminiLabel, { newGeminiLabel = it }, label = { Text("Key label") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(newGeminiKey, { newGeminiKey = it }, label = { Text("New Gemini API key") }, placeholder = { Text("AIza...") }, singleLine = true, visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { keyVisible = !keyVisible }) { Icon(if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null) } }, modifier = Modifier.fillMaxWidth().testTag("gemini_api_key_field"))
-                        OutlinedTextField(newGeminiLimit, { newGeminiLimit = it.filter(Char::isDigit) }, label = { Text("Daily request budget") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                        Button(onClick = { viewModel.addGeminiKey(newGeminiLabel, newGeminiKey, newGeminiLimit.toIntOrNull() ?: 20); newGeminiKey = ""; newGeminiLabel = "" }, enabled = newGeminiKey.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Add Gemini key") }
-                        OutlinedTextField(value = state.geminiModel, onValueChange = { viewModel.onGeminiModelChanged(it) }, label = { Text("Gemini model") }, placeholder = { Text("gemini-2.5-flash") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+
+                        OutlinedTextField(
+                            value = newGeminiLabel,
+                            onValueChange = { newGeminiLabel = it },
+                            label = { Text("Key label") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = newGeminiKey,
+                            onValueChange = { newGeminiKey = it },
+                            label = { Text("New Gemini API key") },
+                            placeholder = { Text("AIza...") },
+                            singleLine = true,
+                            visualTransformation = if (keyVisible) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
+                            trailingIcon = {
+                                IconButton(onClick = { keyVisible = !keyVisible }) {
+                                    Icon(
+                                        if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = "Toggle API key visibility"
+                                    )
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("gemini_api_key_field")
+                        )
+                        OutlinedTextField(
+                            value = newGeminiLimit,
+                            onValueChange = { newGeminiLimit = it.filter(Char::isDigit) },
+                            label = { Text("Daily request budget") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Button(
+                            onClick = {
+                                viewModel.addGeminiKey(
+                                    newGeminiLabel,
+                                    newGeminiKey,
+                                    newGeminiLimit.toIntOrNull() ?: 20
+                                )
+                                newGeminiKey = ""
+                                newGeminiLabel = ""
+                            },
+                            enabled = newGeminiKey.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Add Gemini key")
+                        }
+
+                        Spacer(Modifier.height(16.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "Gemini model",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    if (state.availableGeminiModels.isEmpty()) {
+                                        "Load all compatible models from Google"
+                                    } else {
+                                        "${state.availableGeminiModels.size} compatible models loaded"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = { viewModel.refreshGeminiModels() },
+                                enabled = !state.isLoadingGeminiModels && state.geminiApiKey.isNotBlank()
+                            ) {
+                                if (state.isLoadingGeminiModels) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(Icons.Default.Refresh, contentDescription = null)
+                                }
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (state.availableGeminiModels.isEmpty()) "Load all" else "Refresh")
+                            }
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            val selectedModel = state.availableGeminiModels
+                                .firstOrNull { it.id == state.geminiModel }
+                            Surface(
+                                onClick = {
+                                    if (state.availableGeminiModels.isEmpty()) {
+                                        viewModel.refreshGeminiModels()
+                                    } else {
+                                        geminiModelDropdownExpanded = true
+                                    }
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("gemini_model_dropdown")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            selectedModel?.displayName ?: state.geminiModel,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        if (selectedModel != null && selectedModel.displayName != selectedModel.id) {
+                                            Text(
+                                                selectedModel.id,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    Icon(
+                                        Icons.Default.ArrowDropDown,
+                                        contentDescription = "Choose Gemini model"
+                                    )
+                                }
+                            }
+
+                            DropdownMenu(
+                                expanded = geminiModelDropdownExpanded,
+                                onDismissRequest = { geminiModelDropdownExpanded = false },
+                                modifier = Modifier
+                                    .fillMaxWidth(0.95f)
+                                    .heightIn(max = 480.dp)
+                            ) {
+                                state.availableGeminiModels.forEach { model ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Row(verticalAlignment = Alignment.Top) {
+                                                if (model.id == state.geminiModel) {
+                                                    Icon(
+                                                        Icons.Default.Check,
+                                                        contentDescription = "Selected",
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                    Spacer(Modifier.width(8.dp))
+                                                }
+                                                Column {
+                                                    Text(
+                                                        model.displayName,
+                                                        fontWeight = if (model.id == state.geminiModel) {
+                                                            FontWeight.Bold
+                                                        } else {
+                                                            FontWeight.SemiBold
+                                                        }
+                                                    )
+                                                    Text(
+                                                        model.id,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                    if (model.isLegacyForNewUsers) {
+                                                        Text(
+                                                            "Legacy — may be unavailable to new API keys",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.error
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        onClick = {
+                                            viewModel.onGeminiModelChanged(model.id)
+                                            geminiModelDropdownExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        if (state.geminiModel.startsWith("gemini-2.")) {
+                            Spacer(Modifier.height(8.dp))
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    "Gemini 2.x can be unavailable to new API keys. Choose a current Gemini 3 model from the full list above.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+
+                        state.geminiModelsError?.let { error ->
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                error,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
                     }
 
                     AiProvider.CHATGPT -> {

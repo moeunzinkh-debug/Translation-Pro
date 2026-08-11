@@ -19,6 +19,8 @@
      - **Google Gemini** (Supports runtime `.env` injection via `GEMINI_API_KEY` or custom key)
      - **OpenAI ChatGPT** (GPT-4o / GPT-4o-mini)
      - **Custom Endpoint** (Configurable Base URL and model)
+   - Gemini uses Google's current **Interactions API**, with `gemini-3.6-flash` as the default.
+   - The Gemini model picker loads every compatible model live from Google's paginated Models API, so users can choose a model without waiting for an app update.
    - Built-in "Test API Connection" tool to verify credentials.
 
 3. **Gemini Key Pool & Daily Budget**

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.model.AiProvider
 import com.example.data.model.GeminiKey
+import com.example.data.model.GeminiModel
 import com.example.data.repository.TranslationRepository
 import com.example.data.security.SecureSettingsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +24,9 @@ data class SettingsUiState(
     val geminiApiKey: String = "",
     val geminiModel: String = "",
     val geminiKeys: List<GeminiKey> = emptyList(),
+    val availableGeminiModels: List<GeminiModel> = emptyList(),
+    val isLoadingGeminiModels: Boolean = false,
+    val geminiModelsError: String? = null,
 
     // ChatGPT
     val chatGptApiKey: String = "",
@@ -47,12 +51,21 @@ class SettingsViewModel(
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
+    // Prevent an older request from replacing results after the active key changes.
+    private var modelLoadGeneration = 0
+
     init {
         loadSettings()
+        if (_uiState.value.selectedProvider == AiProvider.GEMINI &&
+            _uiState.value.geminiApiKey.isNotBlank()
+        ) {
+            refreshGeminiModels()
+        }
     }
 
     fun loadSettings() {
-        _uiState.value = SettingsUiState(
+        val previous = _uiState.value
+        _uiState.value = previous.copy(
             selectedProvider = settingsRepository.getSelectedProvider(),
 
             seaLionApiKey = settingsRepository.getSeaLionApiKey(),
@@ -79,6 +92,9 @@ class SettingsViewModel(
             testConnectionResult = null,
             testConnectionError = null
         )
+        if (provider == AiProvider.GEMINI && _uiState.value.availableGeminiModels.isEmpty()) {
+            refreshGeminiModels()
+        }
     }
 
     // --- Sea Lion setters ---
@@ -103,13 +119,79 @@ class SettingsViewModel(
         _uiState.value = _uiState.value.copy(geminiApiKey = key, isSavedSuccess = true)
     }
 
-    fun addGeminiKey(label: String, key: String, limit: Int) { settingsRepository.addGeminiKey(label, key, limit); loadSettings() }
-    fun removeGeminiKey(id: String) { settingsRepository.removeGeminiKey(id); loadSettings() }
-    fun selectGeminiKey(id: String) { settingsRepository.setActiveGeminiKey(id); loadSettings() }
+    fun addGeminiKey(label: String, key: String, limit: Int) {
+        settingsRepository.addGeminiKey(label, key, limit)
+        loadSettings()
+        refreshGeminiModels()
+    }
+
+    fun removeGeminiKey(id: String) {
+        settingsRepository.removeGeminiKey(id)
+        loadSettings()
+        if (_uiState.value.geminiApiKey.isBlank()) {
+            modelLoadGeneration++
+            _uiState.value = _uiState.value.copy(
+                availableGeminiModels = emptyList(),
+                isLoadingGeminiModels = false,
+                geminiModelsError = null
+            )
+        } else {
+            refreshGeminiModels()
+        }
+    }
+
+    fun selectGeminiKey(id: String) {
+        settingsRepository.setActiveGeminiKey(id)
+        loadSettings()
+        refreshGeminiModels()
+    }
 
     fun onGeminiModelChanged(model: String) {
-        settingsRepository.setGeminiModel(model)
-        _uiState.value = _uiState.value.copy(geminiModel = model, isSavedSuccess = true)
+        val normalizedModel = model.trim().removePrefix("models/")
+        settingsRepository.setGeminiModel(normalizedModel)
+        _uiState.value = _uiState.value.copy(
+            geminiModel = normalizedModel,
+            isSavedSuccess = true,
+            testConnectionResult = null,
+            testConnectionError = null
+        )
+    }
+
+    /** Fetches every compatible model from Google's live API for the currently active key. */
+    fun refreshGeminiModels() {
+        val generation = ++modelLoadGeneration
+        if (_uiState.value.geminiApiKey.isBlank()) {
+            _uiState.value = _uiState.value.copy(
+                availableGeminiModels = emptyList(),
+                isLoadingGeminiModels = false,
+                geminiModelsError = "Add or select a Gemini API key to load all models."
+            )
+            return
+        }
+
+        _uiState.value = _uiState.value.copy(
+            isLoadingGeminiModels = true,
+            geminiModelsError = null
+        )
+        viewModelScope.launch {
+            val result = translationRepository.listGeminiModels()
+            if (generation != modelLoadGeneration) return@launch
+
+            _uiState.value = if (result.isSuccess) {
+                _uiState.value.copy(
+                    availableGeminiModels = result.getOrDefault(emptyList()),
+                    isLoadingGeminiModels = false,
+                    geminiModelsError = null
+                )
+            } else {
+                _uiState.value.copy(
+                    availableGeminiModels = emptyList(),
+                    isLoadingGeminiModels = false,
+                    geminiModelsError = result.exceptionOrNull()?.localizedMessage
+                        ?: "Could not load Gemini models."
+                )
+            }
+        }
     }
 
     // --- ChatGPT setters ---
@@ -157,7 +239,8 @@ class SettingsViewModel(
             } else {
                 _uiState.value = _uiState.value.copy(
                     isTestingConnection = false,
-                    testConnectionError = result.exceptionOrNull()?.localizedMessage ?: "Connection failed."
+                    testConnectionError = result.exceptionOrNull()?.localizedMessage
+                        ?: "Connection failed."
                 )
             }
         }

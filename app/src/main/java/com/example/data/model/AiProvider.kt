@@ -18,7 +18,7 @@ enum class AiProvider(
         id = "gemini",
         displayName = "Google Gemini",
         defaultBaseUrl = "https://generativelanguage.googleapis.com/",
-        defaultModel = "gemini-2.5-flash",
+        defaultModel = "gemini-3.6-flash",
         description = "Google's high-speed multimodal AI model with strong multilingual translation."
     ),
     CHATGPT(
