@@ -238,45 +238,84 @@ class TranslationRepository(
         apiKey: String
     ): TranslationResult {
         val model = normalizedGeminiModel(settingsRepository.getGeminiModel())
-        val interactionRequest = GeminiInteractionRequest(
-            model = model,
-            input = listOf(
-                GeminiInteractionContent(type = "text", text = buildUserContent(request))
-            ),
-            systemInstruction = buildSystemPrompt(request),
-            generationConfig = GeminiInteractionGenerationConfig(
-                temperature = temperatureFor(request)
-            ),
-            // Translation requests do not need server-side conversation storage.
-            store = false
-        )
+        val activeKey = settingsRepository.getActiveGeminiKey()
+        var currentApiKey = apiKey
+        var currentKeyId = activeKey?.id
+        var lastException: Exception? = null
+        val maxRotations = 3 // Try up to 3 different keys
 
-        val response = geminiApiService.createInteraction(
-            apiKey = apiKey,
-            request = interactionRequest
-        )
+        for (attempt in 0 until maxRotations) {
+            try {
+                val interactionRequest = GeminiInteractionRequest(
+                    model = model,
+                    input = listOf(
+                        GeminiInteractionContent(type = "text", text = buildUserContent(request))
+                    ),
+                    systemInstruction = buildSystemPrompt(request),
+                    generationConfig = GeminiInteractionGenerationConfig(
+                        temperature = temperatureFor(request)
+                    ),
+                    store = false
+                )
 
-        if (!response.isSuccessful) {
-            throw geminiApiException(
-                code = response.code(),
-                errorBody = response.errorBody()?.string().orEmpty(),
-                model = model
-            )
+                val response = geminiApiService.createInteraction(
+                    apiKey = currentApiKey,
+                    request = interactionRequest
+                )
+
+                if (!response.isSuccessful) {
+                    val errCode = response.code()
+                    val errBody = response.errorBody()?.string().orEmpty()
+
+                    // Auto-rotate on rate limit (429) or auth/forbidden (403/401)
+                    if ((errCode == 429 || errCode == 403 || errCode == 401) && currentKeyId != null) {
+                        val nextKey = settingsRepository.rotateToNextGeminiKey(currentKeyId!!)
+                        if (nextKey != null) {
+                            currentApiKey = nextKey.value
+                            currentKeyId = nextKey.id
+                            lastException = IOException("Key rotated due to error $errCode. Trying next key...")
+                            continue // Retry with new key
+                        }
+                    }
+
+                    throw geminiApiException(
+                        code = errCode,
+                        errorBody = errBody,
+                        model = model
+                    )
+                }
+
+                val rawText = response.body()?.steps
+                    .orEmpty()
+                    .asSequence()
+                    .filter { it.type == "model_output" }
+                    .flatMap { it.content.asSequence() }
+                    .filter { it.type == "text" }
+                    .mapNotNull { it.text }
+                    .joinToString(separator = "")
+                    .takeIf { it.isNotBlank() }
+                    ?: throw IOException("Gemini returned an empty translation.")
+
+                settingsRepository.recordGeminiRequest()
+                return parseTranslationOutput(rawText, request, AiProvider.GEMINI)
+
+            } catch (e: IOException) {
+                lastException = e
+                // If it's a rate-limit or auth error and we have more keys, rotate and retry
+                val msg = e.message ?: ""
+                if ((msg.contains("429") || msg.contains("403") || msg.contains("401")) && currentKeyId != null) {
+                    val nextKey = settingsRepository.rotateToNextGeminiKey(currentKeyId!!)
+                    if (nextKey != null) {
+                        currentApiKey = nextKey.value
+                        currentKeyId = nextKey.id
+                        continue
+                    }
+                }
+                throw e
+            }
         }
 
-        val rawText = response.body()?.steps
-            .orEmpty()
-            .asSequence()
-            .filter { it.type == "model_output" }
-            .flatMap { it.content.asSequence() }
-            .filter { it.type == "text" }
-            .mapNotNull { it.text }
-            .joinToString(separator = "")
-            .takeIf { it.isNotBlank() }
-            ?: throw IOException("Gemini returned an empty translation.")
-
-        settingsRepository.recordGeminiRequest()
-        return parseTranslationOutput(rawText, request, AiProvider.GEMINI)
+        throw lastException ?: IOException("All Gemini API keys exhausted.")
     }
 
     /**
@@ -363,44 +402,82 @@ class TranslationRepository(
         if (apiKey.isBlank()) throw IllegalArgumentException("Add a Gemini API key in Settings first.")
 
         val model = normalizedGeminiModel(settingsRepository.getGeminiModel())
-        val prompt = "Transcribe this audio accurately${if (languageHint.isBlank()) "" else " in $languageHint"}. Return only the transcript, with natural paragraph breaks."
-        val request = GeminiInteractionRequest(
-            model = model,
-            input = listOf(
-                GeminiInteractionContent(
-                    type = "audio",
-                    mimeType = mimeType,
-                    data = Base64.encodeToString(audio, Base64.NO_WRAP)
-                ),
-                GeminiInteractionContent(type = "text", text = prompt)
-            ),
-            generationConfig = GeminiInteractionGenerationConfig(temperature = 0.1),
-            store = false
-        )
+        val activeKey = settingsRepository.getActiveGeminiKey()
+        var currentApiKey = apiKey
+        var currentKeyId = activeKey?.id
+        var lastException: Exception? = null
+        val maxRotations = 3
 
-        val response = geminiApiService.createInteraction(apiKey, request)
-        if (!response.isSuccessful) {
-            throw geminiApiException(
-                code = response.code(),
-                errorBody = response.errorBody()?.string().orEmpty(),
-                model = model
-            )
+        val prompt = "Transcribe this audio accurately${if (languageHint.isBlank()) "" else " in $languageHint"}. Return only the transcript, with natural paragraph breaks."
+
+        for (attempt in 0 until maxRotations) {
+            try {
+                val request = GeminiInteractionRequest(
+                    model = model,
+                    input = listOf(
+                        GeminiInteractionContent(
+                            type = "audio",
+                            mimeType = mimeType,
+                            data = Base64.encodeToString(audio, Base64.NO_WRAP)
+                        ),
+                        GeminiInteractionContent(type = "text", text = prompt)
+                    ),
+                    generationConfig = GeminiInteractionGenerationConfig(temperature = 0.1),
+                    store = false
+                )
+
+                val response = geminiApiService.createInteraction(currentApiKey, request)
+                if (!response.isSuccessful) {
+                    val errCode = response.code()
+                    val errBody = response.errorBody()?.string().orEmpty()
+
+                    if ((errCode == 429 || errCode == 403 || errCode == 401) && currentKeyId != null) {
+                        val nextKey = settingsRepository.rotateToNextGeminiKey(currentKeyId!!)
+                        if (nextKey != null) {
+                            currentApiKey = nextKey.value
+                            currentKeyId = nextKey.id
+                            continue
+                        }
+                    }
+
+                    throw geminiApiException(
+                        code = errCode,
+                        errorBody = errBody,
+                        model = model
+                    )
+                }
+
+                val text = response.body()?.steps
+                    .orEmpty()
+                    .asSequence()
+                    .filter { it.type == "model_output" }
+                    .flatMap { it.content.asSequence() }
+                    .filter { it.type == "text" }
+                    .mapNotNull { it.text }
+                    .joinToString(separator = "")
+                    .trim()
+                    .takeIf { it.isNotBlank() }
+                    ?: throw IOException("Gemini returned an empty transcript.")
+
+                settingsRepository.recordGeminiRequest()
+                Result.success(text)
+
+            } catch (e: IOException) {
+                lastException = e
+                val msg = e.message ?: ""
+                if ((msg.contains("429") || msg.contains("403") || msg.contains("401")) && currentKeyId != null) {
+                    val nextKey = settingsRepository.rotateToNextGeminiKey(currentKeyId!!)
+                    if (nextKey != null) {
+                        currentApiKey = nextKey.value
+                        currentKeyId = nextKey.id
+                        continue
+                    }
+                }
+                throw e
+            }
         }
 
-        val text = response.body()?.steps
-            .orEmpty()
-            .asSequence()
-            .filter { it.type == "model_output" }
-            .flatMap { it.content.asSequence() }
-            .filter { it.type == "text" }
-            .mapNotNull { it.text }
-            .joinToString(separator = "")
-            .trim()
-            .takeIf { it.isNotBlank() }
-            ?: throw IOException("Gemini returned an empty transcript.")
-
-        settingsRepository.recordGeminiRequest()
-        Result.success(text)
+        throw lastException ?: IOException("All Gemini API keys exhausted.")
     } catch (e: Exception) {
         Result.failure(e)
     }

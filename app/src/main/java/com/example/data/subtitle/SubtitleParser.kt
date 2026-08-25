@@ -100,4 +100,26 @@ object SubtitleParser {
         }
         return sb.toString().trim()
     }
+
+    /** Serialize as plain-text: one translated line per segment, no index or timecodes. */
+    fun serializeAsTxt(subtitleFile: SubtitleFileContent): String {
+        val sb = StringBuilder()
+        for (segment in subtitleFile.segments) {
+            val text = segment.translatedText ?: segment.originalText
+            sb.append(text)
+            sb.append("\n")
+        }
+        return sb.toString().trim()
+    }
+
+    /** Serialize as SRT format specifically, regardless of original format. */
+    fun serializeAsSrt(subtitleFile: SubtitleFileContent): String {
+        val sb = StringBuilder()
+        for (segment in subtitleFile.segments) {
+            sb.append("${segment.index}\n")
+            sb.append("${segment.timecode}\n")
+            sb.append("${segment.translatedText ?: segment.originalText}\n\n")
+        }
+        return sb.toString().trim()
+    }
 }

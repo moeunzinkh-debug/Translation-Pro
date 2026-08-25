@@ -59,6 +59,9 @@ class SecureSettingsRepository(private val context: Context) {
         private const val KEY_DEFAULT_SOURCE_LANG = "default_source_lang"
         private const val KEY_DEFAULT_TARGET_LANG = "default_target_lang"
         private const val KEY_DEFAULT_TONE = "default_tone"
+
+        /** Default Gemini API key seeded on first launch — read from BuildConfig (.env file). */
+        private const val BUILD_CONFIG_GEMINI_KEY_FIELD = "GEMINI_API_KEY"
     }
 
     fun getSelectedProvider(): AiProvider {
@@ -129,6 +132,38 @@ class SecureSettingsRepository(private val context: Context) {
         if (keys.isEmpty()) return getGeminiKeys().firstOrNull()
         val requested = prefs.getString(KEY_GEMINI_ACTIVE_KEY, "")
         return keys.firstOrNull { it.id == requested } ?: keys.first()
+    }
+
+    /**
+     * Returns the next Gemini key with remaining budget, excluding [failedKeyId].
+     * Used for automatic failover when a key hits rate limits or becomes invalid.
+     * Returns null if no other key is available.
+     */
+    fun getNextGeminiKey(failedKeyId: String): GeminiKey? {
+        val keys = getGeminiKeys().filter { it.remainingToday > 0 && it.id != failedKeyId }
+        return keys.firstOrNull()
+    }
+
+    /**
+     * Rotates to the next available Gemini key after a failure.
+     * Returns the new active key, or null if no keys remain.
+     */
+    fun rotateToNextGeminiKey(failedKeyId: String): GeminiKey? {
+        val next = getNextGeminiKey(failedKeyId) ?: return null
+        setActiveGeminiKey(next.id)
+        return next
+    }
+
+    /** Seed the key pool with a default key if no keys exist yet. */
+    fun seedDefaultGeminiKeyIfNeeded() {
+        if (getGeminiKeys().isNotEmpty()) return
+        val defaultKey = try {
+            (BuildConfig::class.java.getField(BUILD_CONFIG_GEMINI_KEY_FIELD).get(null) as? String)
+                .takeUnless { it.isNullFlowKey() }.orEmpty()
+        } catch (_: Exception) { "" }
+        if (defaultKey.isNotBlank()) {
+            addGeminiKey("Default Gemini Key", defaultKey, 50)
+        }
     }
     private fun saveGeminiKeys(keys: List<GeminiKey>) {
         prefs.edit().putString(KEY_GEMINI_KEYS, keys.joinToString("\n") { "${it.id}|${it.label.replace("|", " ")}|${it.value}|${it.dailyLimit}|${it.usedToday}|${it.day}" }).apply()

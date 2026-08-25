@@ -213,6 +213,78 @@ class SubtitleViewModel(
         }
     }
 
+    /** Export translated subtitles as a .srt file. */
+    fun exportAsSrt(context: Context, shouldShare: Boolean = false) {
+        val fileContent = _uiState.value.subtitleFile ?: return
+        viewModelScope.launch {
+            try {
+                val serialized = SubtitleParser.serializeAsSrt(fileContent)
+                val langCode = _uiState.value.targetLanguage.take(3).lowercase()
+                val originalName = fileContent.fileName.substringBeforeLast(".")
+                val outFileName = "${originalName}_translated_$langCode.srt"
+
+                val outputDir = File(context.cacheDir, "subtitles")
+                if (!outputDir.exists()) outputDir.mkdirs()
+
+                val outFile = File(outputDir, outFileName)
+                withContext(Dispatchers.IO) {
+                    FileOutputStream(outFile).use { fos ->
+                        fos.write(serialized.toByteArray())
+                    }
+                }
+
+                _uiState.value = _uiState.value.copy(
+                    exportedFilePath = outFile.absolutePath,
+                    infoMessage = "Exported SRT file: $outFileName"
+                )
+
+                if (shouldShare) {
+                    shareFile(context, outFile)
+                }
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = "SRT export failed: ${e.localizedMessage}"
+                )
+            }
+        }
+    }
+
+    /** Export translated subtitles as a plain .txt file (no timecodes or indices). */
+    fun exportAsTxt(context: Context, shouldShare: Boolean = false) {
+        val fileContent = _uiState.value.subtitleFile ?: return
+        viewModelScope.launch {
+            try {
+                val serialized = SubtitleParser.serializeAsTxt(fileContent)
+                val langCode = _uiState.value.targetLanguage.take(3).lowercase()
+                val originalName = fileContent.fileName.substringBeforeLast(".")
+                val outFileName = "${originalName}_translated_$langCode.txt"
+
+                val outputDir = File(context.cacheDir, "subtitles")
+                if (!outputDir.exists()) outputDir.mkdirs()
+
+                val outFile = File(outputDir, outFileName)
+                withContext(Dispatchers.IO) {
+                    FileOutputStream(outFile).use { fos ->
+                        fos.write(serialized.toByteArray())
+                    }
+                }
+
+                _uiState.value = _uiState.value.copy(
+                    exportedFilePath = outFile.absolutePath,
+                    infoMessage = "Exported TXT file: $outFileName"
+                )
+
+                if (shouldShare) {
+                    shareFile(context, outFile)
+                }
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = "TXT export failed: ${e.localizedMessage}"
+                )
+            }
+        }
+    }
+
     private fun shareFile(context: Context, file: File) {
         try {
             val uri = FileProvider.getUriForFile(

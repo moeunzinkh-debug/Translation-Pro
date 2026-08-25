@@ -37,7 +37,16 @@
    - Preserves exact index numbers and timing timestamps (`00:01:20,000 --> 00:01:23,150`).
    - Batch chunking strategy with real-time progress bar and automatic single-line fallback retries.
    - Live segment preview table showing original vs translated dialogue.
-   - Export and share translated subtitle files.
+   - **Download as SRT** — exports translated subtitles in standard SubRip format.
+   - **Download as TXT** — exports only the translated dialogue text (no timecodes or indices).
+   - Export in original format and share translated subtitle files.
+
+6. **Gemini API Key Auto-Rotation**
+   - Add and manage an unlimited number of encrypted Gemini API keys.
+   - **Automatic key rotation**: when a key hits rate limits (HTTP 429) or becomes invalid (HTTP 403/401), the app automatically switches to the next available key with remaining budget.
+   - Up to 3 key rotation attempts per request for seamless failover.
+   - Default key seeded on first launch for instant out-of-the-box Gemini support.
+   - Works for both translation and audio transcription requests.
 
 ---
 
@@ -68,7 +77,11 @@
 3. Choose your Target Language and Batch Chunk Size (5, 8, 10, or 15).
 4. Tap **Start Subtitle Translation**.
 5. Watch the live progress percentage and preview table update segment by segment.
-6. Tap **Export File** or **Share** to save the translated subtitle file.
+6. After translation completes, choose your export format:
+   - **Download as SRT** — standard SubRip subtitle file with timecodes.
+   - **Download as TXT** — plain text with only translated dialogue lines.
+   - **Export (original format)** — saves in the same format as the source file.
+   - **Share** — share the translated file via any installed app.
 
 ---
 

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.TextSnippet
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -391,6 +392,37 @@ fun SubtitleScreen(viewModel: SubtitleViewModel) {
 
                             Spacer(modifier = Modifier.height(12.dp))
 
+                            // Download as SRT
+                            Button(
+                                onClick = { viewModel.exportAsSrt(context, shouldShare = false) },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("download_srt_button")
+                            ) {
+                                Icon(imageVector = Icons.Default.Download, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Download as SRT", fontWeight = FontWeight.Bold)
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Download as TXT
+                            OutlinedButton(
+                                onClick = { viewModel.exportAsTxt(context, shouldShare = false) },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("download_txt_button")
+                            ) {
+                                Icon(imageVector = Icons.Default.TextSnippet, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Download as TXT", fontWeight = FontWeight.Bold)
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Original format export & Share
                             Row(
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 modifier = Modifier.fillMaxWidth()
@@ -403,7 +435,7 @@ fun SubtitleScreen(viewModel: SubtitleViewModel) {
                                 ) {
                                     Icon(imageVector = Icons.Default.Download, contentDescription = null)
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Export File")
+                                    Text("Export ${state.subtitleFile?.format?.extension?.uppercase() ?: "File"}")
                                 }
 
                                 OutlinedButton(
