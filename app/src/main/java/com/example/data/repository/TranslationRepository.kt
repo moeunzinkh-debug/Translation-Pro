@@ -487,12 +487,13 @@ class TranslationRepository(
             return """
             You are a professional media subtitle translator.
             Task:
-            1. Translate dialogue segments accurately into ${request.targetLanguage}.
+            1. Translate every dialogue segment accurately into ${request.targetLanguage}.
             2. Source Language: ${request.sourceLanguage}.
             3. Respect slang, idioms, and cultural context. Translate meaning, not literal words.
             4. Tone instruction: ${request.tone.promptInstruction}.
             5. Keep proper nouns and named entities consistent.
-            6. STRICT SUBTITLE CONSTRAINT: Output ONLY the translated dialogue text. Do NOT include line numbers, timestamps, explanatory notes, or intro/outro conversational fluff.
+            6. TAG PRESERVATION (CRITICAL): Every input segment starts with an index tag like [7]. Your output MUST repeat that exact same tag (same number, same brackets) as the very first thing on its translated line, in the same order. Output exactly one tagged line per input segment — never renumber, merge, split, skip, or add segments.
+            7. STRICT SUBTITLE CONSTRAINT: Output ONLY the tagged translated lines. Do NOT add timestamps, explanatory notes, or intro/outro conversational fluff.
             """.trimIndent()
         }
 

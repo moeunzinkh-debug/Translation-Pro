@@ -13,6 +13,7 @@ import com.example.data.subtitle.SubtitleFileContent
 import com.example.data.subtitle.SubtitleParser
 import com.example.data.subtitle.SubtitleProgress
 import com.example.data.subtitle.SubtitleTranslatorEngine
+import com.example.ui.components.LanguageData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -54,14 +55,17 @@ class SubtitleViewModel(
 
     fun onSourceLanguageSelected(lang: String) {
         _uiState.value = _uiState.value.copy(sourceLanguage = lang)
+        settingsRepository.setDefaultSourceLanguage(lang)
     }
 
     fun onTargetLanguageSelected(lang: String) {
         _uiState.value = _uiState.value.copy(targetLanguage = lang)
+        settingsRepository.setDefaultTargetLanguage(lang)
     }
 
     fun onToneSelected(tone: TranslationTone) {
         _uiState.value = _uiState.value.copy(tone = tone)
+        settingsRepository.setDefaultTone(tone)
     }
 
     fun onBatchSizeSelected(size: Int) {
@@ -182,7 +186,7 @@ class SubtitleViewModel(
         viewModelScope.launch {
             try {
                 val serialized = SubtitleParser.serialize(fileContent)
-                val langCode = _uiState.value.targetLanguage.take(3).lowercase()
+                val langCode = LanguageData.fileCodeFor(_uiState.value.targetLanguage)
                 val originalName = fileContent.fileName.substringBeforeLast(".")
                 val ext = fileContent.format.extension
                 val outFileName = "${originalName}_translated_$langCode.$ext"
@@ -219,7 +223,7 @@ class SubtitleViewModel(
         viewModelScope.launch {
             try {
                 val serialized = SubtitleParser.serializeAsSrt(fileContent)
-                val langCode = _uiState.value.targetLanguage.take(3).lowercase()
+                val langCode = LanguageData.fileCodeFor(_uiState.value.targetLanguage)
                 val originalName = fileContent.fileName.substringBeforeLast(".")
                 val outFileName = "${originalName}_translated_$langCode.srt"
 
@@ -255,7 +259,7 @@ class SubtitleViewModel(
         viewModelScope.launch {
             try {
                 val serialized = SubtitleParser.serializeAsTxt(fileContent)
-                val langCode = _uiState.value.targetLanguage.take(3).lowercase()
+                val langCode = LanguageData.fileCodeFor(_uiState.value.targetLanguage)
                 val originalName = fileContent.fileName.substringBeforeLast(".")
                 val outFileName = "${originalName}_translated_$langCode.txt"
 
