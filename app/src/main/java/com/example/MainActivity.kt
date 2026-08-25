@@ -53,6 +53,9 @@ class MainActivity : ComponentActivity() {
         val settingsRepo = SecureSettingsRepository(applicationContext)
         val translationRepo = TranslationRepository(settingsRepo)
 
+        // Seed default Gemini API key on first launch
+        settingsRepo.seedDefaultGeminiKeyIfNeeded()
+
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {

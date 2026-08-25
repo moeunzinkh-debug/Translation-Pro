@@ -27,6 +27,7 @@ data class SettingsUiState(
     val availableGeminiModels: List<GeminiModel> = emptyList(),
     val isLoadingGeminiModels: Boolean = false,
     val geminiModelsError: String? = null,
+    val geminiAutoRotateEnabled: Boolean = true,
 
     // ChatGPT
     val chatGptApiKey: String = "",
