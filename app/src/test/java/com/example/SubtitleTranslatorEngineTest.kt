@@ -36,7 +36,9 @@ class SubtitleTranslatorEngineTest {
     private class FakeTranslationService(
         private val handler: (TranslationRequest) -> Result<TranslationResult>
     ) : TranslationService {
-        val requests = mutableListOf<TranslationRequest>()
+        // The engine now issues requests concurrently, so this must be thread-safe.
+        val requests: MutableList<TranslationRequest> =
+            java.util.Collections.synchronizedList(mutableListOf())
 
         override suspend fun translate(request: TranslationRequest): Result<TranslationResult> {
             requests += request
@@ -146,6 +148,47 @@ class SubtitleTranslatorEngineTest {
         assertEquals("ខ្មែរ-1", segments[0].translatedText)
         assertEquals("ខ្មែរ-2", segments[1].translatedText)
         assertEquals("ខ្មែរ-3", segments[2].translatedText)
+    }
+
+    /** Perf regression guard: batches must overlap instead of running strictly one at a time. */
+    @Test
+    fun `batches are translated concurrently`() = runBlocking {
+        val inFlight = java.util.concurrent.atomic.AtomicInteger(0)
+        val peak = java.util.concurrent.atomic.AtomicInteger(0)
+
+        val service = object : TranslationService {
+            override suspend fun translate(request: TranslationRequest): Result<TranslationResult> {
+                val now = inFlight.incrementAndGet()
+                peak.updateAndGet { max -> maxOf(max, now) }
+                kotlinx.coroutines.delay(50)
+                inFlight.decrementAndGet()
+                val out = request.text.lines().joinToString("\n") { line ->
+                    val tag = line.substringBefore(" ")
+                    "$tag ខ្មែរ"
+                }
+                return khmer(out)
+            }
+
+            override suspend fun testConnection(provider: AiProvider): Result<String> =
+                Result.success("ok")
+        }
+
+        // 12 segments, 1 per batch -> 12 independent requests.
+        val file = SubtitleFileContent(
+            fileName = "big.srt",
+            format = SubtitleFormat.SRT,
+            segments = (1..12).map {
+                SubtitleSegment(it, "00:00:0$it,000 --> 00:00:0$it,900", "Line $it")
+            }
+        )
+
+        SubtitleTranslatorEngine(service, maxConcurrentRequests = 4)
+            .translateSubtitles(file, "English", "Khmer (Cambodian)", TranslationTone.AUTO, batchSize = 1)
+            .toList()
+
+        assertTrue("Expected overlapping requests, peak was ${peak.get()}", peak.get() > 1)
+        assertTrue("Concurrency must stay bounded, peak was ${peak.get()}", peak.get() <= 4)
+        assertTrue(file.segments.all { it.translatedText == "ខ្មែរ" })
     }
 
     @Test

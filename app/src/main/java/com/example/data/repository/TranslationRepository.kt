@@ -1,6 +1,7 @@
 package com.example.data.repository
 
 import android.util.Base64
+import com.example.BuildConfig
 import com.example.data.api.ChatCompletionRequest
 import com.example.data.api.ChatMessage
 import com.example.data.api.GeminiApiService
@@ -17,7 +18,11 @@ import com.example.data.security.SecureSettingsRepository
 import com.example.data.service.TranslationService
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -33,13 +38,32 @@ class TranslationRepository(
         .addLast(KotlinJsonAdapterFactory())
         .build()
 
+    // Perf: a single shared client with a warm connection pool, so the many small
+    // subtitle-batch requests reuse TLS connections instead of re-handshaking each time.
+    // Body logging is extremely expensive (it buffers + re-encodes every request and
+    // response as a String) and is therefore disabled outside debug builds.
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
-        .addInterceptor(HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
-        })
+        .callTimeout(90, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
+        .dispatcher(
+            Dispatcher().apply {
+                maxRequests = 16
+                maxRequestsPerHost = 16
+            }
+        )
+        .addInterceptor(
+            HttpLoggingInterceptor().apply {
+                level = if (BuildConfig.DEBUG) {
+                    HttpLoggingInterceptor.Level.BASIC
+                } else {
+                    HttpLoggingInterceptor.Level.NONE
+                }
+            }
+        )
         .build()
 
     private val openAiApiService: OpenAiApiService by lazy {
@@ -60,12 +84,16 @@ class TranslationRepository(
             .create(GeminiApiService::class.java)
     }
 
-    override suspend fun translate(request: TranslationRequest): Result<TranslationResult> {
+    override suspend fun translate(
+        request: TranslationRequest
+    ): Result<TranslationResult> = withContext(Dispatchers.IO) {
+        // Reading the encrypted settings store does disk + crypto work, so it must never
+        // run on the caller's (main) thread - that alone made every translation feel laggy.
         val provider = settingsRepository.getSelectedProvider()
         val apiKey = settingsRepository.getApiKeyForProvider(provider)
 
         if (apiKey.isBlank()) {
-            return Result.failure(
+            return@withContext Result.failure(
                 IllegalArgumentException("API Key for ${provider.displayName} is missing. Please configure it in Settings.")
             )
         }
@@ -83,24 +111,28 @@ class TranslationRepository(
                     AiProvider.CHATGPT -> translateViaChatGPT(request, apiKey)
                     AiProvider.CUSTOM -> translateViaCustom(request, apiKey)
                 }
-                return Result.success(result)
+                return@withContext Result.success(result)
             } catch (e: Exception) {
                 lastException = e
                 if (attempts < 2 && (e is IOException || isRetryableServerError(e))) {
-                    delay(1000) // 1 second backoff before retry
+                    // Short backoff: a full second per failure was noticeable stalling,
+                    // especially with many subtitle batches in flight.
+                    delay(350)
                 } else {
                     break
                 }
             }
         }
 
-        return Result.failure(lastException ?: Exception("Translation failed after retries."))
+        Result.failure(lastException ?: Exception("Translation failed after retries."))
     }
 
-    override suspend fun testConnection(provider: AiProvider): Result<String> {
+    override suspend fun testConnection(
+        provider: AiProvider
+    ): Result<String> = withContext(Dispatchers.IO) {
         val apiKey = settingsRepository.getApiKeyForProvider(provider)
         if (apiKey.isBlank()) {
-            return Result.failure(IllegalArgumentException("API Key is empty."))
+            return@withContext Result.failure(IllegalArgumentException("API Key is empty."))
         }
 
         val testRequest = TranslationRequest(
@@ -110,7 +142,7 @@ class TranslationRepository(
             isSubtitle = true
         )
 
-        return try {
+        try {
             val result = when (provider) {
                 AiProvider.SEA_LION -> translateViaSeaLion(testRequest, apiKey)
                 AiProvider.GEMINI -> translateViaGemini(testRequest, apiKey)
@@ -323,7 +355,8 @@ class TranslationRepository(
      * generateContent support. This avoids a hard-coded list becoming stale when Google changes
      * model availability.
      */
-    suspend fun listGeminiModels(): Result<List<GeminiModel>> = try {
+    suspend fun listGeminiModels(): Result<List<GeminiModel>> = withContext(Dispatchers.IO) {
+        try {
         val apiKey = settingsRepository.getGeminiApiKey()
         if (apiKey.isBlank()) {
             throw IllegalArgumentException("Add or select a Gemini API key before loading models.")
@@ -392,12 +425,18 @@ class TranslationRepository(
             throw IOException("No Gemini text-generation models are available for this API key.")
         }
         Result.success(models)
-    } catch (e: Exception) {
-        Result.failure(e)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     /** Sends an audio clip to Gemini's multimodal Interactions API and returns plain transcript text. */
-    suspend fun transcribe(audio: ByteArray, mimeType: String, languageHint: String): Result<String> = try {
+    suspend fun transcribe(
+        audio: ByteArray,
+        mimeType: String,
+        languageHint: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
         val apiKey = settingsRepository.getGeminiApiKey()
         if (apiKey.isBlank()) throw IllegalArgumentException("Add a Gemini API key in Settings first.")
 
@@ -460,7 +499,9 @@ class TranslationRepository(
                     ?: throw IOException("Gemini returned an empty transcript.")
 
                 settingsRepository.recordGeminiRequest()
-                Result.success(text)
+                // Bug fix: without this return the loop kept re-uploading the same audio
+                // maxRotations times and then failed, even though the first call succeeded.
+                return@withContext Result.success(text)
 
             } catch (e: IOException) {
                 lastException = e
@@ -478,8 +519,9 @@ class TranslationRepository(
         }
 
         throw lastException ?: IOException("All Gemini API keys exhausted.")
-    } catch (e: Exception) {
-        Result.failure(e)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     private fun buildSystemPrompt(request: TranslationRequest): String {
