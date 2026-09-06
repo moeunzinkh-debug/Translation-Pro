@@ -31,10 +31,22 @@ jobs:
       - name: Show failing test details
         if: failure()
         run: |
-          echo "===== FAILED TEST OUTPUT ====="
-          for f in app/build/test-results/testDebugUnitTest/*.xml; do
-            grep -ql '<failure\|<error' "$f" && { echo "--- $f"; cat "$f"; }
-          done || true
+          python3 - <<'EOF'
+          import glob, re, os
+          out = []
+          for f in glob.glob('app/build/test-results/**/*.xml', recursive=True):
+              t = open(f, encoding='utf-8', errors='replace').read()
+              for m in re.finditer(r'<testcase[^>]*name="([^"]*)"[^>]*>(.*?)</testcase>', t, re.S):
+                  if '<failure' in m.group(2) or '<error' in m.group(2):
+                      body = re.sub(r'<[^>]+>', ' ', m.group(2))
+                      out.append(m.group(1) + ' :: ' + ' '.join(body.split())[:1200])
+          for f in glob.glob('**/compile*.txt', recursive=True):
+              out.append(open(f, errors='replace').read()[:1500])
+          if not out:
+              out = ['No parsed test failures found - likely a COMPILATION error. See raw log.']
+          for line in out[:20]:
+              print('::error title=TestFailure::' + line.replace('%','%25').replace('\r','').replace('\n','%0A'))
+          EOF
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
