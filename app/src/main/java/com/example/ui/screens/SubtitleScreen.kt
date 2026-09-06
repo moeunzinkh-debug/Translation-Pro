@@ -267,11 +267,11 @@ fun SubtitleScreen(viewModel: SubtitleViewModel) {
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "Batch Chunk Size:",
+                                text = "Lines per request:",
                                 style = MaterialTheme.typography.labelMedium,
                                 modifier = Modifier.padding(end = 8.dp)
                             )
-                            listOf(5, 8, 10, 15).forEach { size ->
+                            listOf(10, 25, 40, 60).forEach { size ->
                                 FilterChip(
                                     selected = state.batchSize == size,
                                     onClick = { viewModel.onBatchSizeSelected(size) },

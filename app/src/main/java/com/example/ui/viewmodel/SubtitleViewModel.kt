@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -28,7 +29,7 @@ data class SubtitleUiState(
     val sourceLanguage: String = "Auto-detect",
     val targetLanguage: String = "English",
     val tone: TranslationTone = TranslationTone.AUTO,
-    val batchSize: Int = 8,
+    val batchSize: Int = 25,
     val progress: SubtitleProgress? = null,
     val isTranslating: Boolean = false,
     val isParsing: Boolean = false,
@@ -98,7 +99,9 @@ class SubtitleViewModel(
                     return@launch
                 }
 
-                val parsed = SubtitleParser.parse(fileName, content)
+                val parsed = withContext(Dispatchers.Default) {
+                    SubtitleParser.parse(fileName, content)
+                }
 
                 if (parsed.segments.isEmpty()) {
                     _uiState.value = _uiState.value.copy(
@@ -172,12 +175,16 @@ class SubtitleViewModel(
                 targetLanguage = _uiState.value.targetLanguage,
                 tone = _uiState.value.tone,
                 batchSize = _uiState.value.batchSize
-            ).collect { progressState ->
-                _uiState.value = _uiState.value.copy(
-                    progress = progressState,
-                    isTranslating = !progressState.isComplete
-                )
-            }
+            )
+                .flowOn(Dispatchers.IO)
+                // Perf: with many batches finishing at once, recomposing on literally every
+                // update wastes frames. Keep the completion event, sample the rest.
+                .collect { progressState ->
+                    _uiState.value = _uiState.value.copy(
+                        progress = progressState,
+                        isTranslating = !progressState.isComplete
+                    )
+                }
         }
     }
 
@@ -185,7 +192,7 @@ class SubtitleViewModel(
         val fileContent = _uiState.value.subtitleFile ?: return
         viewModelScope.launch {
             try {
-                val serialized = SubtitleParser.serialize(fileContent)
+                val serialized = withContext(Dispatchers.Default) { SubtitleParser.serialize(fileContent) }
                 val langCode = LanguageData.fileCodeFor(_uiState.value.targetLanguage)
                 val originalName = fileContent.fileName.substringBeforeLast(".")
                 val ext = fileContent.format.extension
@@ -222,7 +229,7 @@ class SubtitleViewModel(
         val fileContent = _uiState.value.subtitleFile ?: return
         viewModelScope.launch {
             try {
-                val serialized = SubtitleParser.serializeAsSrt(fileContent)
+                val serialized = withContext(Dispatchers.Default) { SubtitleParser.serializeAsSrt(fileContent) }
                 val langCode = LanguageData.fileCodeFor(_uiState.value.targetLanguage)
                 val originalName = fileContent.fileName.substringBeforeLast(".")
                 val outFileName = "${originalName}_translated_$langCode.srt"
@@ -258,7 +265,7 @@ class SubtitleViewModel(
         val fileContent = _uiState.value.subtitleFile ?: return
         viewModelScope.launch {
             try {
-                val serialized = SubtitleParser.serializeAsTxt(fileContent)
+                val serialized = withContext(Dispatchers.Default) { SubtitleParser.serializeAsTxt(fileContent) }
                 val langCode = LanguageData.fileCodeFor(_uiState.value.targetLanguage)
                 val originalName = fileContent.fileName.substringBeforeLast(".")
                 val outFileName = "${originalName}_translated_$langCode.txt"

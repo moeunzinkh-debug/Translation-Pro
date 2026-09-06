@@ -3,11 +3,28 @@ package com.example.data.subtitle
 import com.example.data.model.TranslationRequest
 import com.example.data.model.TranslationTone
 import com.example.data.service.TranslationService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
+/**
+ * Translates a whole subtitle file.
+ *
+ * Performance: batches are dispatched **concurrently** (bounded by [maxConcurrentRequests])
+ * instead of strictly one-after-another. Subtitle files routinely contain 800–2000 cues, which
+ * used to mean 100–250 sequential round trips of 2–5 s each — i.e. many minutes of waiting while
+ * the network sat idle between calls. Overlapping the requests cuts the wall-clock time by
+ * roughly the concurrency factor. Individual fallback retries inside a batch are overlapped too.
+ */
 class SubtitleTranslatorEngine(
-    private val translationService: TranslationService
+    private val translationService: TranslationService,
+    private val maxConcurrentRequests: Int = DEFAULT_CONCURRENCY
 ) {
 
     fun translateSubtitles(
@@ -16,14 +33,12 @@ class SubtitleTranslatorEngine(
         targetLanguage: String,
         tone: TranslationTone = TranslationTone.AUTO,
         batchSize: Int = 8
-    ): Flow<SubtitleProgress> = flow {
+    ): Flow<SubtitleProgress> = channelFlow {
         val segments = subtitleFile.segments
         val totalSegments = segments.size
-        val batches = segments.chunked(batchSize)
-        val totalBatches = batches.size
 
         if (totalSegments == 0) {
-            emit(
+            send(
                 SubtitleProgress(
                     currentBatch = 0,
                     totalBatches = 0,
@@ -32,70 +47,52 @@ class SubtitleTranslatorEngine(
                     isComplete = true
                 )
             )
-            return@flow
+            return@channelFlow
         }
 
+        val batches = segments.chunked(batchSize.coerceAtLeast(1))
+        val totalBatches = batches.size
+        val concurrency = maxConcurrentRequests.coerceIn(1, totalBatches)
+
+        // Progress is now reported by *completed* work rather than by position in a serial loop,
+        // because several batches are in flight at once.
         var processedCount = 0
+        var completedBatches = 0
 
-        for (batchIndex in batches.indices) {
-            val currentBatchSegments = batches[batchIndex]
-
-            // Emit current progress before batch request
-            emit(
-                SubtitleProgress(
-                    currentBatch = batchIndex + 1,
-                    totalBatches = totalBatches,
-                    processedSegments = processedCount,
-                    totalSegments = totalSegments
-                )
+        send(
+            SubtitleProgress(
+                currentBatch = 0,
+                totalBatches = totalBatches,
+                processedSegments = 0,
+                totalSegments = totalSegments
             )
+        )
 
-            // Format batch text with index tags [ID] text
-            val batchText = currentBatchSegments.joinToString("\n") { seg ->
-                "[${seg.index}] ${seg.originalText.replace("\n", " ")}"
-            }
+        val gate = Semaphore(concurrency)
 
-            val request = TranslationRequest(
-                sourceLanguage = sourceLanguage,
-                targetLanguage = targetLanguage,
-                text = batchText,
-                tone = tone,
-                isSubtitle = true
-            )
-
-            val translationResult = translationService.translate(request)
-
-            if (translationResult.isSuccess) {
-                val translatedBatchOutput = translationResult.getOrNull()?.translatedText ?: ""
-                val matchedIds = parseAndApplyBatchTranslation(currentBatchSegments, translatedBatchOutput)
-
-                // Any segment the batch reply did not cover (e.g. the model dropped or mangled
-                // its index tag) is retried on its own, so it is still really translated into
-                // the target language instead of silently staying in the source language.
-                for (seg in currentBatchSegments) {
-                    if (seg.index !in matchedIds) {
-                        translateSegmentIndividually(seg, sourceLanguage, targetLanguage, tone)
-                    }
-                }
-            } else {
-                // Retry each segment individually in case batch prompt failed
-                for (seg in currentBatchSegments) {
-                    translateSegmentIndividually(seg, sourceLanguage, targetLanguage, tone)
+        coroutineScope {
+            val jobs: List<Deferred<Int>> = batches.map { batchSegments ->
+                async {
+                    translateBatch(this, gate, batchSegments, sourceLanguage, targetLanguage, tone)
+                    batchSegments.size
                 }
             }
 
-            processedCount += currentBatchSegments.size
-            emit(
-                SubtitleProgress(
-                    currentBatch = batchIndex + 1,
-                    totalBatches = totalBatches,
-                    processedSegments = processedCount,
-                    totalSegments = totalSegments
+            for (job in jobs) {
+                processedCount += job.await()
+                completedBatches++
+                send(
+                    SubtitleProgress(
+                        currentBatch = completedBatches,
+                        totalBatches = totalBatches,
+                        processedSegments = processedCount,
+                        totalSegments = totalSegments
+                    )
                 )
-            )
+            }
         }
 
-        emit(
+        send(
             SubtitleProgress(
                 currentBatch = totalBatches,
                 totalBatches = totalBatches,
@@ -104,6 +101,58 @@ class SubtitleTranslatorEngine(
                 isComplete = true
             )
         )
+    }
+
+    private suspend fun translateBatch(
+        scope: CoroutineScope,
+        gate: Semaphore,
+        batchSegments: List<SubtitleSegment>,
+        sourceLanguage: String,
+        targetLanguage: String,
+        tone: TranslationTone
+    ) {
+        // Format batch text with index tags [ID] text
+        val batchText = batchSegments.joinToString("\n") { seg ->
+            "[${seg.index}] ${seg.originalText.replace("\n", " ")}"
+        }
+
+        val request = TranslationRequest(
+            sourceLanguage = sourceLanguage,
+            targetLanguage = targetLanguage,
+            text = batchText,
+            tone = tone,
+            isSubtitle = true
+        )
+
+        // The permit is held only for the duration of the actual network call, so the
+        // per-segment fallbacks below are throttled by the same global limit.
+        val translationResult = gate.withPermit { translationService.translate(request) }
+
+        val missing: List<SubtitleSegment> = if (translationResult.isSuccess) {
+            val translatedBatchOutput = translationResult.getOrNull()?.translatedText ?: ""
+            val matchedIds = parseAndApplyBatchTranslation(batchSegments, translatedBatchOutput)
+            // Any segment the batch reply did not cover (e.g. the model dropped or mangled its
+            // index tag) is retried on its own, so it is still really translated into the target
+            // language instead of silently staying in the source language.
+            batchSegments.filter { it.index !in matchedIds }
+        } else {
+            // Retry each segment individually in case the batch prompt failed.
+            batchSegments
+        }
+
+        if (missing.isEmpty()) return
+
+        // Perf: the per-segment fallbacks are independent, so run them together rather than
+        // one blocking round trip after another.
+        missing
+            .map { seg ->
+                scope.async {
+                    gate.withPermit {
+                        translateSegmentIndividually(seg, sourceLanguage, targetLanguage, tone)
+                    }
+                }
+            }
+            .awaitAll()
     }
 
     /**
@@ -184,9 +233,15 @@ class SubtitleTranslatorEngine(
         return map.keys
     }
 
-    private companion object {
+    companion object {
+        /**
+         * Number of translation requests allowed in flight at once. Kept modest so free-tier
+         * provider rate limits (HTTP 429) are not tripped, while still hiding most latency.
+         */
+        const val DEFAULT_CONCURRENCY = 4
+
         // Leading index tag variants: [12], [ 12 ], 【12】, (12), with optional ":-." separators.
-        val LINE_TAG_REGEX = Regex("""^\s*[\[【(]\s*(\d+)\s*[\]】)]\s*[:\-–—.]?\s*(.*)$""")
-        val INDEX_TAG_PREFIX_REGEX = Regex("""^\s*[\[【(]\s*\d+\s*[\]】)]\s*[:\-–—.]?\s*""")
+        private val LINE_TAG_REGEX = Regex("""^\s*[\[【(]\s*(\d+)\s*[\]】)]\s*[:\-–—.]?\s*(.*)$""")
+        private val INDEX_TAG_PREFIX_REGEX = Regex("""^\s*[\[【(]\s*\d+\s*[\]】)]\s*[:\-–—.]?\s*""")
     }
 }
