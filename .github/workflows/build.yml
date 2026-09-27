@@ -56,11 +56,10 @@ jobs:
               print('::warning title=TestFailure::' + line.replace('%', '%25').replace('\r', '').replace('\n', '%0A'))
           EOF
 
-      # The build never short-circuits: if it fails we still get a chance to read WHY from
-      # the annotations, instead of only "exit code 1" with a log that needs a browser login.
+      # No `continue-on-error` here on purpose: a green check must mean the APK really built.
+      # The log is still captured so the "Surface the real error" step below (if: always())
+      # can report what went wrong as readable annotations.
       - name: Build Release APK
-        id: build
-        continue-on-error: true
         run: ./gradlew assembleRelease assembleDebug --stacktrace --console=plain 2>&1 | tee /tmp/gradle.log
 
       - name: Surface the real error

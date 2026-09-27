@@ -55,14 +55,26 @@ class TranslationRepository(
         request: TranslationRequest,
         onPartial: (String) -> Unit
     ): Result<TranslationResult> = withContext(Dispatchers.IO) {
-        if (settingsRepository.getSelectedProvider() != AiProvider.GEMINI) {
+        val provider = settingsRepository.getSelectedProvider()
+
+        if (provider != AiProvider.GEMINI) {
             // No SSE support on the OpenAI-compatible providers yet — one-shot is still
             // correct, and we still notify once so the UI behaves identically.
             return@withContext runWithRetries {
                 doTranslate(request).also { onPartial(it.translatedText) }
             }
         }
-        runWithRetries { translateViaGeminiStreaming(request, onPartial) }
+
+        val apiKey = settingsRepository.getApiKeyForProvider(provider)
+        if (apiKey.isBlank()) {
+            return@withContext Result.failure(
+                IllegalArgumentException(
+                    "API Key for ${provider.displayName} is missing. Please configure it in Settings."
+                )
+            )
+        }
+
+        runWithRetries { translateViaGeminiStreaming(request, apiKey, onPartial) }
     }
 
     private suspend fun doTranslate(request: TranslationRequest): TranslationResult {
