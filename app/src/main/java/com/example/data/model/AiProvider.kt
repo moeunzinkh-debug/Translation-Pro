@@ -18,7 +18,10 @@ enum class AiProvider(
         id = "gemini",
         displayName = "Google Gemini",
         defaultBaseUrl = "https://generativelanguage.googleapis.com/",
-        defaultModel = "gemini-3.6-flash",
+        // gemini-3.7-flash is the fastest model in the 3.5-3.8 Flash line, which is what
+        // "instant mode" needs. It rejects thinking_level "minimal", so the repository pins
+        // "low" for it — see TranslationRepository.fastestThinkingLevel.
+        defaultModel = "gemini-3.7-flash",
         description = "Google's high-speed multimodal AI model with strong multilingual translation."
     ),
     CHATGPT(

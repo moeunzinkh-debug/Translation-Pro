@@ -38,6 +38,18 @@ class SecureSettingsRepository(private val context: Context) {
     private val _selectedProviderFlow = MutableStateFlow(getSelectedProvider())
     val selectedProviderFlow: StateFlow<AiProvider> = _selectedProviderFlow.asStateFlow()
 
+    /**
+     * In-memory copy of the Gemini key pool.
+     *
+     * Every `EncryptedSharedPreferences.getString` runs a Tink AES-SIV key derivation plus an
+     * AES-GCM value decryption, and the key pool is stored as one single encrypted blob. The
+     * old code re-read and re-parsed that blob on every single `getApiKeyForProvider` /
+     * `getActiveGeminiKey` / `recordGeminiRequest` call, several times per translation. The
+     * cache is written through on every mutation, so it can never go stale.
+     */
+    @Volatile
+    private var cachedGeminiKeys: List<GeminiKey>? = null
+
     companion object {
         private const val KEY_SELECTED_PROVIDER = "selected_provider"
         private const val KEY_SEA_LION_API_KEY = "sea_lion_api_key"
@@ -106,15 +118,29 @@ class SecureSettingsRepository(private val context: Context) {
     // --- Gemini: unlimited local key slots. Gemini does not expose remaining project quota to API keys;
     // the limit below is an optional app-managed daily request budget, shown transparently in the UI.
     fun getGeminiKeys(): List<GeminiKey> {
+        cachedGeminiKeys?.let { return it }
+
         val today = LocalDate.now().toString()
-        val raw = prefs.getString(KEY_GEMINI_KEYS, "") ?: ""
+        val raw = prefs.getString(KEY_GEMINI_KEYS, "").orEmpty()
         val stored = raw.lineSequence().mapNotNull { line ->
             val p = line.split("|", limit = 6)
             if (p.size == 6) GeminiKey(p[0], p[1], p[2], p[3].toIntOrNull() ?: 20, if (p[5] == today) p[4].toIntOrNull() ?: 0 else 0, today) else null
         }.toList()
-        if (stored.isNotEmpty()) return stored
+
+        if (stored.isNotEmpty()) {
+            cachedGeminiKeys = stored
+            return stored
+        }
+
         val legacy = prefs.getString(KEY_GEMINI_API_KEY, "").orEmpty()
-        return if (legacy.isBlank()) emptyList() else listOf(GeminiKey(UUID.randomUUID().toString(), "Gemini key 1", legacy, 20, 0, today)).also { saveGeminiKeys(it) }
+        if (legacy.isBlank()) {
+            cachedGeminiKeys = emptyList()
+            return emptyList()
+        }
+
+        val migrated = listOf(GeminiKey(UUID.randomUUID().toString(), "Gemini key 1", legacy, 20, 0, today))
+        saveGeminiKeys(migrated)
+        return migrated
     }
 
     fun addGeminiKey(label: String, key: String, dailyLimit: Int = 20) {
@@ -166,7 +192,22 @@ class SecureSettingsRepository(private val context: Context) {
         }
     }
     private fun saveGeminiKeys(keys: List<GeminiKey>) {
+        cachedGeminiKeys = keys
         prefs.edit().putString(KEY_GEMINI_KEYS, keys.joinToString("\n") { "${it.id}|${it.label.replace("|", " ")}|${it.value}|${it.dailyLimit}|${it.usedToday}|${it.day}" }).apply()
+    }
+
+    /**
+     * Normalises a user-entered base URL into a full chat-completions endpoint, so the
+     * repository does not have to repeat the same string surgery for every provider.
+     */
+    fun chatCompletionsUrl(baseUrl: String): String {
+        val trimmed = baseUrl.trim()
+        if (trimmed.isEmpty()) return trimmed
+        return if (trimmed.endsWith("chat/completions")) {
+            trimmed
+        } else {
+            (if (trimmed.endsWith("/")) trimmed else "$trimmed/") + "chat/completions"
+        }
     }
     fun getGeminiApiKey(): String {
         return getActiveGeminiKey()?.value ?: try { (BuildConfig::class.java.getField("GEMINI_API_KEY").get(null) as? String).takeUnless { it.isNullFlowKey() }.orEmpty() } catch (_: Exception) { "" }

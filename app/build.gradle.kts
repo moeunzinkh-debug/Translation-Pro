@@ -13,6 +13,16 @@ android {
   namespace = "com.example"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
+  // Release signing is opt-in via environment variables / a keystore in the project root.
+  // When they are absent we fall back to AGP's built-in "debug" signing config, which points
+  // at ~/.android/debug.keystore and generates it on demand. The previous release config
+  // referenced a keystore that does not exist, so `./gradlew assembleRelease` could not run
+  // at all on a clean checkout.
+  val releaseKeystoreFile = file("my-upload-key.jks").takeIf { it.exists() }
+  val hasReleaseSigning = releaseKeystoreFile != null &&
+      System.getenv("STORE_PASSWORD") != null &&
+      System.getenv("KEY_PASSWORD") != null
+
   defaultConfig {
     applicationId = "com.aistudio.translatepro.app"
     minSdk = 26
@@ -24,29 +34,32 @@ android {
   }
 
   signingConfigs {
-    create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD")
-      keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
+    if (hasReleaseSigning) {
+      create("release") {
+        storeFile = System.getenv("KEYSTORE_PATH")?.let { file(it) } ?: releaseKeystoreFile
+        storePassword = System.getenv("STORE_PASSWORD")
+        keyAlias = System.getenv("KEY_ALIAS") ?: "upload"
+        keyPassword = System.getenv("KEY_PASSWORD")
+      }
     }
-    create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
-    }
+    // The previous "debugConfig" pointed at ./debug.keystore, which is gitignored and absent
+    // on a clean checkout. AGP's built-in "debug" config already auto-generates one, so the
+    // custom config was both broken and redundant.
   }
 
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      // R8 shrinks a Compose app by a large margin and measurably speeds up cold start.
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      signingConfig = signingConfigs.getByName("release")
+      signingConfig = signingConfigs.getByName(
+        if (hasReleaseSigning) "release" else "debug"
+      )
     }
     debug {
+      isDebuggable = true
     }
   }
   compileOptions {
