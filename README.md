@@ -6,7 +6,16 @@
 
 ## Features
 
-1. **Smart Text Translation**
+1. **Smart Text Translation (Instant Mode)**
+   - **Streamed output** — the translation paints in token by token, so the first words appear
+     in milliseconds instead of after the whole answer.
+   - **Pinned low thinking** — Gemini 3.x models are hybrid reasoning models that emit thought
+     tokens *before* answering and default to a high thinking level. The app pins
+     `thinking_level` to `minimal` (or `low` on 3.7/3.8, which reject `minimal`) and disables
+     thought summaries. This is why translating even a single word used to feel slow: the cost
+     was per-request overhead, not per-word.
+   - **No doomed retries** — deterministic failures (400 / 401 / 403 / 404) now fail
+     immediately instead of burning a second request plus a 1s sleep.
    - Multiline input & output text areas with copy/share buttons.
    - Source language auto-detection and 30+ target languages with quick swap.
    - Smart prompt logic instructing AI models to translate slang, idioms, and cultural nuance rather than word-for-word.
@@ -19,8 +28,12 @@
      - **Google Gemini** (Supports runtime `.env` injection via `GEMINI_API_KEY` or custom key)
      - **OpenAI ChatGPT** (GPT-4o / GPT-4o-mini)
      - **Custom Endpoint** (Configurable Base URL and model)
-   - Gemini uses Google's current **Interactions API**, with `gemini-3.6-flash` as the default.
-   - The Gemini model picker loads every compatible model live from Google's paginated Models API, so users can choose a model without waiting for an app update.
+   - Gemini uses Google's current **Interactions API**, with `gemini-3.7-flash` as the default
+     (the fastest model in the 3.5–3.8 Flash line).
+   - The Gemini model picker loads every compatible model live from Google's paginated Models
+     API, so users can choose a model without waiting for an app update. Models are sorted
+     fastest-first: `gemini-3.7-flash` → `3.6` → `3.5` → `3.8` → `3.5-flash-lite` → `3.1-flash-lite`.
+   - Non-text models (embedding, image, video, TTS, live) are filtered out of the picker.
    - Built-in "Test API Connection" tool to verify credentials.
 
 3. **Gemini Key Pool & Daily Budget**
@@ -87,6 +100,8 @@
 
 ## Security & Storage
 - API keys are saved on the device via `EncryptedSharedPreferences` backed by the Android KeyStore (`MasterKey.Builder`). Keys are never sent to third-party tracking servers.
+- The HTTP logger is restricted to `BuildConfig.DEBUG` and redacts `Authorization` / `x-goog-api-key`, so keys are never written to logcat in release builds.
+- The decrypted key pool is cached in memory (and written through on every change) so a translation does not re-run Tink AES-SIV/AES-GCM decryption several times per request.
 
 ---
 
@@ -94,3 +109,26 @@
 - Minimum SDK: `26` (Android 8.0)
 - Target SDK: `34` / `36`
 - Architecture: Kotlin, Jetpack Compose, MVVM, Retrofit + OkHttp + Moshi, Coroutines, Material 3.
+
+### Building a release APK
+
+```bash
+./gradlew :app:assembleRelease
+# -> app/build/outputs/apk/release/app-release.apk
+```
+
+Requires a JDK 17+ and the Android SDK (set `ANDROID_HOME` or `sdk.dir` in `local.properties`).
+R8 minification and resource shrinking are enabled for release.
+
+**Signing:** if `my-upload-key.jks` exists in the project root *and* `STORE_PASSWORD` +
+`KEY_PASSWORD` are exported, the build is signed with your upload key. Otherwise it falls back
+to AGP's built-in debug signing config (auto-generated at `~/.android/debug.keystore`) so
+`assembleRelease` still produces an installable APK instead of failing on a missing keystore.
+
+```bash
+export STORE_PASSWORD=...
+export KEY_PASSWORD=...
+export KEY_ALIAS=upload            # optional, defaults to "upload"
+export KEYSTORE_PATH=/path/to.jks  # optional, defaults to ./my-upload-key.jks
+./gradlew :app:assembleRelease
+```

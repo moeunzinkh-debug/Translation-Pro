@@ -406,7 +406,11 @@ fun TranslationScreen(
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
-                    text = if (willRephrase) "Finding an easier version..." else "Smart Translating...",
+                    text = when {
+                        state.isStreaming -> "Translating live..."
+                        willRephrase -> "Finding an easier version..."
+                        else -> "Smart Translating..."
+                    },
                     fontWeight = FontWeight.Bold
                 )
             } else {
@@ -549,7 +553,9 @@ fun TranslationScreen(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
-                        text = state.translatedText,
+                        // A block caret is appended while tokens are still arriving, so the
+                        // user sees the answer growing instead of an empty card + spinner.
+                        text = if (state.isStreaming) "${state.translatedText}▍" else state.translatedText,
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.Medium,

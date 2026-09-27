@@ -3,6 +3,7 @@ package com.example.ui.viewmodel
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.model.AiProvider
@@ -14,6 +15,7 @@ import com.example.data.security.SecureSettingsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class TranslationUiState(
@@ -27,6 +29,9 @@ data class TranslationUiState(
     val slangNotes: String? = null,
     val activeProvider: AiProvider = AiProvider.SEA_LION,
     val isKeyMissing: Boolean = false,
+    // True while tokens are still streaming in; the output card shows a live caret and the
+    // text grows as the model writes, instead of a blank spinner until the very end.
+    val isStreaming: Boolean = false,
     // --- "Tap again for an easier alternative" tracking ---
     // How many times the current input has been translated (1 = first translation)
     val translationAttempt: Int = 0,
@@ -120,6 +125,7 @@ class TranslationViewModel(
             translatedText = "",
             slangNotes = null,
             errorMessage = null,
+            isStreaming = false,
             translationAttempt = 0,
             isAlternativeResult = false,
             lastTranslatedInput = "",
@@ -158,7 +164,9 @@ class TranslationViewModel(
             isLoading = true,
             errorMessage = null,
             slangNotes = null,
-            isKeyMissing = false
+            isKeyMissing = false,
+            isStreaming = false,
+            translatedText = ""
         )
 
         viewModelScope.launch {
@@ -172,7 +180,19 @@ class TranslationViewModel(
                 previousTranslations = shownTranslations.toList()
             )
 
-            val result = translationRepository.translate(req)
+            // The repository streams from an IO dispatcher, so partial text arrives here
+            // off the main thread. StateFlow.update is thread-safe, and the throttle below
+            // keeps a fast token stream from driving a Compose recomposition per token.
+            var lastEmitAt = 0L
+            val result = translationRepository.translateStreaming(req) { partial ->
+                val now = SystemClock.elapsedRealtime()
+                // `lastEmitAt == 0L` is the "nothing emitted yet" sentinel, so the very
+                // first delta is always painted immediately no matter the device uptime.
+                if (lastEmitAt == 0L || now - lastEmitAt >= PARTIAL_EMIT_INTERVAL_MS) {
+                    lastEmitAt = now
+                    _uiState.update { it.copy(translatedText = partial, isStreaming = true) }
+                }
+            }
 
             if (result.isSuccess) {
                 val data = result.getOrNull()
@@ -182,24 +202,30 @@ class TranslationViewModel(
                     // Keep the prompt history bounded to the most recent few variants
                     while (shownTranslations.size > 5) shownTranslations.removeAt(0)
                 }
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    translatedText = newTranslation,
-                    slangNotes = data?.slangNotes,
-                    errorMessage = null,
-                    translationAttempt = attempt,
-                    isAlternativeResult = isRephrase,
-                    lastTranslatedInput = text,
-                    lastUsedSourceLanguage = _uiState.value.sourceLanguage,
-                    lastUsedTargetLanguage = _uiState.value.targetLanguage,
-                    lastUsedTone = _uiState.value.tone
-                )
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        isStreaming = false,
+                        translatedText = newTranslation,
+                        slangNotes = data?.slangNotes,
+                        errorMessage = null,
+                        translationAttempt = attempt,
+                        isAlternativeResult = isRephrase,
+                        lastTranslatedInput = text,
+                        lastUsedSourceLanguage = _uiState.value.sourceLanguage,
+                        lastUsedTargetLanguage = _uiState.value.targetLanguage,
+                        lastUsedTone = _uiState.value.tone
+                    )
+                }
             } else {
                 val err = result.exceptionOrNull()?.message ?: "Translation failed."
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    errorMessage = err
-                )
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        isStreaming = false,
+                        errorMessage = err
+                    )
+                }
             }
         }
     }
@@ -213,5 +239,14 @@ class TranslationViewModel(
         } catch (e: Exception) {
             false
         }
+    }
+
+    private companion object {
+        /**
+         * Streaming deltas can arrive faster than the screen can use. Repainting the output
+         * card more than ~20x a second is wasted work, so partial text is coalesced into
+         * ~20 fps updates. The final result is always written in full regardless.
+         */
+        const val PARTIAL_EMIT_INTERVAL_MS = 50L
     }
 }

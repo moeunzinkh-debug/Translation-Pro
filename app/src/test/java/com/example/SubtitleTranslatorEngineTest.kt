@@ -43,6 +43,15 @@ class SubtitleTranslatorEngineTest {
             return handler(request)
         }
 
+        override suspend fun translateStreaming(
+            request: TranslationRequest,
+            onPartial: (String) -> Unit
+        ): Result<TranslationResult> {
+            val result = translate(request)
+            onPartial(result.getOrNull()?.translatedText.orEmpty())
+            return result
+        }
+
         override suspend fun testConnection(provider: AiProvider): Result<String> =
             Result.success("ok")
     }
